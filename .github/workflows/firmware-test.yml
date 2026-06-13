@@ -1,0 +1,101 @@
+name: Build & Release TEST Firmware
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'contaore/arduino-test/**'
+      - '.github/workflows/firmware-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Arduino
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.arduino15
+            ~/Arduino/libraries
+          key: arduino-${{ runner.os }}-${{ hashFiles('.github/workflows/firmware-test.yml') }}
+          restore-keys: arduino-${{ runner.os }}-
+
+      - name: Setup Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Install ESP32 platform
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls \
+            https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+
+      - name: Install libraries
+        run: |
+          arduino-cli lib install "TFT_eSPI"
+          arduino-cli lib install "MFRC522"
+          arduino-cli lib install "WiFiManager"
+          arduino-cli lib install "ArduinoJson"
+
+      - name: Copy User_Setup.h into TFT_eSPI
+        run: |
+          cp contaore/arduino-test/User_Setup.h \
+             ~/Arduino/libraries/TFT_eSPI/User_Setup.h
+
+      - name: Compile
+        run: |
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32 \
+            --output-dir build/ \
+            --warnings none \
+            contaore/arduino-test/
+
+      - name: Prepare release
+        id: vars
+        run: |
+          VERSION=$(grep '#define FW_VERSION' contaore/arduino-test/arduino-test.ino | sed 's/.*"\(.*\)"/\1/' | tr -d '[:space:]')
+          BIN=$(find build/ -name "*.bin" | grep -v bootloader | grep -v partitions | head -1)
+          cp "$BIN" "build/timbry-${VERSION}.bin"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION | Source: $BIN"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${{ steps.vars.outputs.version }}"
+          TAG="${V}"
+          URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/timbry-${V}.bin"
+
+          gh release delete "$TAG" --cleanup-tag --yes 2>/dev/null || true
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+
+          cat > /tmp/notes.md << NOTES
+          Build automatico — commit \`${{ github.sha }}\`
+
+          ### Firmware di test — cosa fa:
+          1. **TEST DISPLAY** — cicla tutti i colori del TFT (1,2s per colore)
+          2. **TEST BUZZER** — scala di 15 frequenze dal grave (200 Hz) all'acuto (3200 Hz)
+          3. **TEST RFID** — aspetta un tag, lo legge, visualizza UID, emette bip, poi ripete
+
+          ### OTA attivo — risposta backend (/api/hardware/ping):
+          \`\`\`json
+          {
+            "ota_url": "${URL}",
+            "ota_version": "${V}"
+          }
+          \`\`\`
+          NOTES
+
+          gh release create "$TAG" "build/timbry-${V}.bin" \
+            --title "TEST Firmware ${V}" \
+            --notes-file /tmp/notes.md \
+            --prerelease
