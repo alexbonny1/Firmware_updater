@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'Firmware_updater/arduino-test/**'
+      - 'arduino-test/**'
       - '.github/workflows/firmware-test.yml'
   workflow_dispatch:
 
@@ -47,7 +47,7 @@ jobs:
 
       - name: Copy User_Setup.h into TFT_eSPI
         run: |
-          cp Firmware_updater/arduino-test/User_Setup.h \
+          cp arduino-test/User_Setup.h \
              ~/Arduino/libraries/TFT_eSPI/User_Setup.h
 
       - name: Compile
@@ -56,12 +56,12 @@ jobs:
             --fqbn esp32:esp32:esp32 \
             --output-dir build/ \
             --warnings none \
-            Firmware_updater/arduino-test/
+            arduino-test/
 
       - name: Prepare release
         id: vars
         run: |
-          VERSION=$(grep '#define FW_VERSION' Firmware_updater/arduino-test/arduino-test.ino | sed 's/.*"\(.*\)"/\1/' | tr -d '[:space:]')
+          VERSION=$(grep '#define FW_VERSION' arduino-test/arduino-test.ino | sed 's/.*"\(.*\)"/\1/' | tr -d '[:space:]')
           BIN=$(find build/ -name "*.bin" | grep -v bootloader | grep -v partitions | head -1)
           cp "$BIN" "build/timbry-${VERSION}.bin"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
