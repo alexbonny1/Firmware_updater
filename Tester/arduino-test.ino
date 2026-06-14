@@ -24,6 +24,7 @@
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
 #include <WiFiClientSecure.h>
+#include "certs.h"
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include <SPI.h>
@@ -117,8 +118,9 @@ static uint16_t contrastColor(uint16_t bg) {
   uint8_t r = (bg >> 11) & 0x1F;
   uint8_t g = (bg >> 5)  & 0x3F;
   uint8_t b = (bg >> 0)  & 0x1F;
-  uint32_t lum = r * 8 + g * 4 + b * 8;
-  return (lum > 240) ? C_BLACK : C_WHITE;
+  // Approssimazione ITU-R BT.601 per RGB565 (r∈[0,31], g∈[0,63], b∈[0,31])
+  uint32_t lum = (uint32_t)r * 54 + (uint32_t)g * 183 + (uint32_t)b * 18;
+  return (lum > 12000) ? C_BLACK : C_WHITE;
 }
 
 void loadConfig() {
@@ -165,31 +167,37 @@ void beepRead() {
 // ─────────────────────────────────────
 // OTA
 // ─────────────────────────────────────
-static String resolveOtaUrl(const String& url) {
+static String resolveOtaUrl(const String& startUrl) {
   const char* hdrKeys[] = {"Location"};
-  String loc = "";
-  if (url.startsWith("https")) {
-    WiFiClientSecure c; c.setInsecure();
-    HTTPClient h;
-    if (h.begin(c, url)) {
+  String url = startUrl;
+  for (int hop = 0; hop < 3; hop++) {
+    String loc = "";
+    if (url.startsWith("https")) {
+      WiFiClientSecure c; c.setCACert(ROOT_CA);
+      HTTPClient h;
+      h.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
       h.collectHeaders(hdrKeys, 1);
-      int code = h.GET();
-      if (code == 301 || code == 302 || code == 307 || code == 308)
-        loc = h.header("Location");
-      h.end();
-    }
-  } else {
-    HTTPClient h;
-    if (h.begin(url)) {
+      if (h.begin(c, url)) {
+        int code = h.GET();
+        if (code >= 300 && code < 400) loc = h.header("Location");
+        h.end();
+      }
+    } else {
+      WiFiClient c; HTTPClient h;
+      h.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
       h.collectHeaders(hdrKeys, 1);
-      int code = h.GET();
-      if (code == 301 || code == 302 || code == 307 || code == 308)
-        loc = h.header("Location");
-      h.end();
+      if (h.begin(c, url)) {
+        int code = h.GET();
+        if (code >= 300 && code < 400) loc = h.header("Location");
+        h.end();
+      }
     }
+    if (loc.length() <= 8) break;
+    Serial.printf("OTA redirect %d: %s\n", hop + 1, loc.c_str());
+    url = loc;
   }
-  Serial.printf("OTA URL: %s\n", loc.length() > 8 ? loc.c_str() : url.c_str());
-  return (loc.length() > 8) ? loc : url;
+  Serial.printf("OTA URL finale: %s\n", url.c_str());
+  return url;
 }
 
 void doOTA(const String& url, const String& newVersion) {
@@ -204,7 +212,7 @@ void doOTA(const String& url, const String& newVersion) {
   httpUpdate.rebootOnUpdate(true);
   t_httpUpdate_return ret;
   if (finalUrl.startsWith("https")) {
-    WiFiClientSecure c; c.setInsecure();
+    WiFiClientSecure c; c.setCACert(ROOT_CA);
     ret = httpUpdate.update(c, finalUrl);
   } else {
     WiFiClient c;
@@ -250,7 +258,7 @@ void taskHeartbeat() {
   };
 
   if (g_backendUrl.startsWith("https")) {
-    WiFiClientSecure c; c.setInsecure(); HTTPClient h;
+    WiFiClientSecure c; c.setCACert(ROOT_CA); HTTPClient h;
     if (h.begin(c, url)) {
       h.setTimeout(10000); h.setReuse(false);
       h.addHeader("Content-Type", "application/json");
@@ -266,8 +274,12 @@ void taskHeartbeat() {
   }
 
   // Se ping fallisce, riprova prima (10s)
-  if (pingCode <= 0)
-    g_lastHeartbeat = millis() - HEARTBEAT_MS + 10000UL;
+  if (pingCode <= 0) {
+    unsigned long _now = millis();
+    g_lastHeartbeat = (_now >= HEARTBEAT_MS - 10000UL)
+                      ? _now - HEARTBEAT_MS + 10000UL
+                      : 0UL;
+  }
 
   if (otaUrl.length() > 0 && otaVersion.length() > 0 && otaVersion != FW_VERSION)
     doOTA(otaUrl, otaVersion);
@@ -401,8 +413,8 @@ void startRfidTest() {
 
 // Aggiorna la riga OTA in fondo allo schermo senza ridisegnare tutto
 void updateOtaFooter() {
-  unsigned long secToNext = (HEARTBEAT_MS - (millis() - g_lastHeartbeat)) / 1000;
-  if (secToNext > HEARTBEAT_MS / 1000) secToNext = HEARTBEAT_MS / 1000;
+  unsigned long elapsed   = millis() - g_lastHeartbeat;
+  unsigned long secToNext = (elapsed >= HEARTBEAT_MS) ? 0UL : (HEARTBEAT_MS - elapsed) / 1000;
 
   tft.fillRect(0, 298, 480, 22, C_BLACK);
   tft.setTextSize(1);
