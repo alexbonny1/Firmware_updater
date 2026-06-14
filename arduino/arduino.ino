@@ -1024,11 +1024,13 @@ void taskWifi() {
       g_wifiOffline = false;
       Serial.println("WIFI RESTORED");
       rfidInit();
+      // NTP prima delle connessioni TLS (stessa ragione del boot)
+      if (syncNTP()) { g_ntpSynced = true; }
+      else { showWaitingNtp(); }
       g_lastHeartbeat = millis() - HEARTBEAT_MS; // forza PING immediato per scaldare Railway
       sendHeartbeat();
       startQueueFlush();
-      if (syncNTP()) { g_ntpSynced = true; showIdle(); }
-      else showWaitingNtp();
+      if (g_ntpSynced) showIdle();
     }
     return;
   }
@@ -1325,11 +1327,14 @@ void setup() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("WIFI OK - IP: %s\n", WiFi.localIP().toString().c_str());
     rfidInit(); beepOk();
+    // NTP prima di qualsiasi connessione TLS: senza ora valida la verifica
+    // del certificato Let's Encrypt fallisce (cert notBefore > epoch 1970)
+    if (syncNTP()) { g_ntpSynced = true; }
+    else showWaitingNtp();
     g_lastHeartbeat = millis() - HEARTBEAT_MS; // forza PING immediato per scaldare Railway
     sendHeartbeat();
     startQueueFlush();
-    if (syncNTP()) { g_ntpSynced = true; showIdle(); }
-    else showWaitingNtp();
+    if (g_ntpSynced) showIdle();
   } else {
     Serial.println("WIFI OFFLINE - modalita offline attiva");
     g_wifiOffline = true; beepErr(); rfidInit(); showWaitingNtp();
