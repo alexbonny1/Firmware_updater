@@ -61,6 +61,7 @@
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
 #include <WiFiClientSecure.h>
+#include "certs.h"
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include <SPI.h>
@@ -80,15 +81,14 @@
 #define TFT_BL_PIN      32
 
 // ── CONFIG ───────────────────────────
-#define FW_VERSION          "3.1"
+#define FW_VERSION          "3.2"
 #define PREF_NAMESPACE      "timrbry"
 #define QUEUE_MAX           100
 #define HEARTBEAT_MS        60000UL
 #define DEBOUNCE_DEFAULT    5000UL
 #define RECONNECT_MS        10000UL
 #define NTP_SERVER          "pool.ntp.org"
-#define TZ_OFFSET           3600
-#define TZ_DST              3600
+#define TZ_POSIX            "CET-1CEST,M3.5.0,M10.5.0/3"
 
 // ── TAG ADMIN ────────────────────────
 #define ADMIN_UID           "3605CA06"
@@ -172,6 +172,7 @@ struct Config {
   char     sede[64];
   uint8_t  theme;
   uint32_t debounce;
+  uint32_t displayMs;
   bool     valid;
 };
 Config cfg;
@@ -215,10 +216,28 @@ bool          g_waitingNtp      = false;
 unsigned long g_lastNtpRetry    = 0;
 #define NTP_RETRY_MS  10000UL
 
+// ── QUEUE FLUSH NON-BLOCCANTE ────────
+int           g_flushRd     = -1;   // -1=idle, >=0=indice corrente
+int           g_flushWr     = 0;    // indice compattazione elementi falliti
+unsigned long g_flushLastMs = 0;
+
 // forward declarations
 void showIdle();
 void showWaitingNtp();
 void startProvisioning();
+
+// ── JSON ESCAPE ──────────────────────
+static void jsonEscape(const char* src, char* dst, size_t maxLen) {
+  size_t j = 0;
+  for (size_t i = 0; src[i] != '\0' && j + 2 < maxLen; i++) {
+    if (src[i] == '"' || src[i] == '\\') {
+      if (j + 3 >= maxLen) break;
+      dst[j++] = '\\';
+    }
+    dst[j++] = src[i];
+  }
+  dst[j] = '\0';
+}
 
 // ── TEMA ─────────────────────────────
 void applyTheme(uint8_t idx) {
@@ -293,7 +312,7 @@ void beepOffline() { tone(BUZZER_PIN, 1600, 100); }
 
 // ── NTP ──────────────────────────────
 bool syncNTP() {
-  configTime(TZ_OFFSET, TZ_DST, NTP_SERVER);
+  configTzTime(TZ_POSIX, NTP_SERVER);
   Serial.print("NTP sync");
   unsigned long s = millis();
   while (time(nullptr) < 1000000000UL) {
@@ -468,33 +487,44 @@ void drawAdmin() {
 
   tft.setTextColor(bodyTxt, C_BG); tft.setTextSize(1);
   int y = HDR_H + 32;
-  tft.setCursor(10, y); tft.print("Backend: "); tft.print(cfg.backend);   y += 18;
-  tft.setCursor(10, y); tft.print("Reader:  "); tft.print(cfg.readerId);  y += 18;
-  tft.setCursor(10, y); tft.print("Company: "); tft.print(cfg.companyId); y += 18;
-  tft.setCursor(10, y); tft.print("Tema:    ");
-  tft.print(cfg.theme < THEME_COUNT ? THEMES[cfg.theme].name : "?");
-  tft.print(" ("); tft.print(cfg.theme); tft.print(")");
-  y += 18;
-  tft.setCursor(10, y); tft.print("WiFi:    ");
-  if (WiFi.status() == WL_CONNECTED) {
-    tft.print("OK  "); tft.print(WiFi.localIP().toString());
-  } else { tft.print("OFFLINE"); }
-  y += 18;
-  tft.setCursor(10, y); tft.print("Queue:   "); tft.print(g_queueSize);        y += 18;
-  tft.setCursor(10, y); tft.print("NTP:     "); tft.print(g_ntpSynced ? "OK" : "NO SYNC"); y += 18;
-  tft.setCursor(10, y); tft.print("Time:    "); tft.print(getISOTimestamp());  y += 18;
-  tft.setCursor(10, y); tft.print("FW:      "); tft.print(FW_VERSION);         y += 18;
-  tft.setCursor(10, y); tft.print("Sede:    "); tft.print(cfg.sede[0] ? cfg.sede : "(non impostata)"); y += 18;
+#define ADMIN_ROW(label, value) \
+  if (y < FTR_Y - 16) { tft.setCursor(10, y); tft.print(label); tft.print(value); y += 18; }
 
-  tft.setCursor(10, y); tft.print("NFC:     ");
-  tft.setTextColor(g_rfidOk ? C_GREEN : C_RED, C_BG);
-  tft.print(g_rfidOk ? "OK" : "ERRORE");
-  tft.setTextColor(bodyTxt, C_BG); y += 18;
+  ADMIN_ROW("Backend: ", cfg.backend)
+  ADMIN_ROW("Reader:  ", cfg.readerId)
+  ADMIN_ROW("Company: ", cfg.companyId)
+  if (y < FTR_Y - 16) {
+    tft.setCursor(10, y); tft.print("Tema:    ");
+    tft.print(cfg.theme < THEME_COUNT ? THEMES[cfg.theme].name : "?");
+    tft.print(" ("); tft.print(cfg.theme); tft.print(")");
+    y += 18;
+  }
+  if (y < FTR_Y - 16) {
+    tft.setCursor(10, y); tft.print("WiFi:    ");
+    if (WiFi.status() == WL_CONNECTED) {
+      tft.print("OK  "); tft.print(WiFi.localIP().toString());
+    } else { tft.print("OFFLINE"); }
+    y += 18;
+  }
+  ADMIN_ROW("Queue:   ", g_queueSize)
+  ADMIN_ROW("NTP:     ", g_ntpSynced ? "OK" : "NO SYNC")
+  ADMIN_ROW("Time:    ", getISOTimestamp())
+  ADMIN_ROW("FW:      ", FW_VERSION)
+  ADMIN_ROW("Sede:    ", cfg.sede[0] ? cfg.sede : "(non impostata)")
 
-  tft.setCursor(10, y); tft.print("Display: ");
-  tft.setTextColor(g_displayOk ? C_GREEN : C_RED, C_BG);
-  tft.print(g_displayOk ? "OK" : "ERRORE");
-  tft.setTextColor(bodyTxt, C_BG); y += 28;
+  if (y < FTR_Y - 16) {
+    tft.setCursor(10, y); tft.print("NFC:     ");
+    tft.setTextColor(g_rfidOk ? C_GREEN : C_RED, C_BG);
+    tft.print(g_rfidOk ? "OK" : "ERRORE");
+    tft.setTextColor(bodyTxt, C_BG); y += 18;
+  }
+  if (y < FTR_Y - 16) {
+    tft.setCursor(10, y); tft.print("Display: ");
+    tft.setTextColor(g_displayOk ? C_GREEN : C_RED, C_BG);
+    tft.print(g_displayOk ? "OK" : "ERRORE");
+    tft.setTextColor(bodyTxt, C_BG); y += 28;
+  }
+#undef ADMIN_ROW
 
   // Istruzione 2a lettura → provisioning (non reset!)
   tft.setTextColor(C_CYAN, C_BG); tft.setTextSize(2);
@@ -581,19 +611,22 @@ bool loadConfig() {
   String readerId   = prefs.getString("readerId",   "");
   String companyId  = prefs.getString("companyId",  "");
   String sede       = prefs.getString("sede",       "");
-  uint8_t  theme    = (uint8_t)prefs.getUInt("theme", 0);
-  uint32_t debounce = prefs.getUInt("debounce", (uint32_t)DEBOUNCE_DEFAULT);
+  uint8_t  theme     = (uint8_t)prefs.getUInt("theme", 0);
+  uint32_t debounce  = prefs.getUInt("debounce",   (uint32_t)DEBOUNCE_DEFAULT);
+  uint32_t displayMs = prefs.getUInt("displayMs",  3000);
   prefs.end();
   if (backend.length() < 4 || readerId.length() < 2 || companyId.length() < 10) return false;
   strlcpy(cfg.backend,    backend.c_str(),    sizeof(cfg.backend));
   strlcpy(cfg.readerId,   readerId.c_str(),   sizeof(cfg.readerId));
   strlcpy(cfg.companyId,  companyId.c_str(),  sizeof(cfg.companyId));
   strlcpy(cfg.sede,       sede.c_str(),       sizeof(cfg.sede));
-  cfg.theme     = (theme < THEME_COUNT) ? theme : 0;
-  cfg.debounce  = (debounce >= 500 && debounce <= 30000) ? debounce : (uint32_t)DEBOUNCE_DEFAULT;
-  cfg.valid     = true;
+  cfg.theme      = (theme < THEME_COUNT) ? theme : 0;
+  cfg.debounce   = (debounce >= 500 && debounce <= 30000) ? debounce : (uint32_t)DEBOUNCE_DEFAULT;
+  cfg.displayMs  = (displayMs >= 500 && displayMs <= 10000) ? displayMs : 3000UL;
+  cfg.valid      = true;
   applyTheme(cfg.theme);
-  g_debouncMs   = cfg.debounce;
+  g_debouncMs    = cfg.debounce;
+  g_resultTimeout = cfg.displayMs;
   return true;
 }
 
@@ -605,6 +638,7 @@ void saveConfig() {
   prefs.putString("sede",      cfg.sede);
   prefs.putUInt("theme",       cfg.theme);
   prefs.putUInt("debounce",    cfg.debounce);
+  prefs.putUInt("displayMs",   cfg.displayMs);
   prefs.end();
 }
 
@@ -658,7 +692,7 @@ int httpPost(const char* path, const char* payload) {
   int    code    = -1;
   String body    = "";
   if (isHttps) {
-    WiFiClientSecure client; client.setInsecure(); HTTPClient http;
+    WiFiClientSecure client; client.setCACert(ROOT_CA); HTTPClient http;
     if (!http.begin(client, g_url)) return -1;
     http.setTimeout(15000); http.setReuse(false);
     http.addHeader("Content-Type", "application/json");
@@ -682,68 +716,102 @@ int httpPost(const char* path, const char* payload) {
   return code;
 }
 
-// ── QUEUE FLUSH ──────────────────────
-void queueFlush() {
+// ── QUEUE FLUSH NON-BLOCCANTE ────────
+void startQueueFlush() {
   if (WiFi.status() != WL_CONNECTED || g_queueSize == 0) return;
-  Serial.printf("FLUSH QUEUE (%d)...\n", g_queueSize);
-  int sent = 0, failed = 0;
+  if (g_flushRd >= 0) return;  // già in corso
+  Serial.printf("FLUSH QUEUE avviato (%d elementi)...\n", g_queueSize);
+  g_flushRd     = 0;
+  g_flushWr     = 0;
+  g_flushLastMs = millis() - 300;  // forza invio immediato del primo elemento
+}
+
+void taskQueueFlush() {
+  if (g_flushRd < 0) return;
+  if (WiFi.status() != WL_CONNECTED) { g_flushRd = -1; g_flushWr = 0; return; }
+  if (millis() - g_flushLastMs < 300) return;
+
+  if (g_flushRd >= g_queueSize) {
+    int sent = g_queueSize - g_flushWr;
+    g_queueSize = g_flushWr;
+    g_flushRd   = -1;
+    g_flushWr   = 0;
+    saveQueue();
+    Serial.printf("FLUSH completato: sent=%d failed=%d\n", sent, g_queueSize);
+    return;
+  }
+
+  char eReader[130], eCompany[130];
+  jsonEscape(cfg.readerId,  eReader,  sizeof(eReader));
+  jsonEscape(cfg.companyId, eCompany, sizeof(eCompany));
+
   bool isHttps = strncmp(cfg.backend, "https", 5) == 0;
   snprintf(g_url, sizeof(g_url), "%s/api/hardware/tag", cfg.backend);
-  for (int i = 0; i < g_queueSize; i++) {
-    if (strlen(g_queue[i].timestamp) > 0)
-      snprintf(g_payload, sizeof(g_payload),
-        "{\"uid\":\"%s\",\"reader_id\":\"%s\",\"company_id\":\"%s\",\"timestamp\":\"%s\",\"offline\":true}",
-        g_queue[i].uid, cfg.readerId, cfg.companyId, g_queue[i].timestamp);
-    else
-      snprintf(g_payload, sizeof(g_payload),
-        "{\"uid\":\"%s\",\"reader_id\":\"%s\",\"company_id\":\"%s\",\"offline\":true}",
-        g_queue[i].uid, cfg.readerId, cfg.companyId);
-    int rc = -1;
-    if (isHttps) {
-      WiFiClientSecure c; c.setInsecure(); HTTPClient h;
-      if (h.begin(c, g_url)) { h.setTimeout(15000); h.setReuse(false);
-        h.addHeader("Content-Type","application/json"); rc = h.POST(g_payload); h.end(); }
-    } else {
-      WiFiClient c; HTTPClient h;
-      if (h.begin(c, g_url)) { h.setTimeout(15000); h.setReuse(false);
-        h.addHeader("Content-Type","application/json"); rc = h.POST(g_payload); h.end(); }
-    }
-    if (rc == 200 || rc == 201) { sent++; }
-    else { if (failed != i) g_queue[failed] = g_queue[i]; failed++; }
-    delay(300);
+  if (strlen(g_queue[g_flushRd].timestamp) > 0)
+    snprintf(g_payload, sizeof(g_payload),
+      "{\"uid\":\"%s\",\"reader_id\":\"%s\",\"company_id\":\"%s\","
+      "\"timestamp\":\"%s\",\"offline\":true}",
+      g_queue[g_flushRd].uid, eReader, eCompany, g_queue[g_flushRd].timestamp);
+  else
+    snprintf(g_payload, sizeof(g_payload),
+      "{\"uid\":\"%s\",\"reader_id\":\"%s\",\"company_id\":\"%s\",\"offline\":true}",
+      g_queue[g_flushRd].uid, eReader, eCompany);
+
+  int rc = -1;
+  if (isHttps) {
+    WiFiClientSecure c; c.setCACert(ROOT_CA); HTTPClient h;
+    if (h.begin(c, g_url)) { h.setTimeout(15000); h.setReuse(false);
+      h.addHeader("Content-Type","application/json"); rc = h.POST(g_payload); h.end(); }
+  } else {
+    WiFiClient c; HTTPClient h;
+    if (h.begin(c, g_url)) { h.setTimeout(15000); h.setReuse(false);
+      h.addHeader("Content-Type","application/json"); rc = h.POST(g_payload); h.end(); }
   }
-  g_queueSize = failed;
-  saveQueue();
-  Serial.printf("FLUSH: sent=%d failed=%d\n", sent, failed);
+
+  if (rc == 200 || rc == 201) {
+    Serial.printf("FLUSH[%d]: OK\n", g_flushRd);
+  } else {
+    if (g_flushWr != g_flushRd) g_queue[g_flushWr] = g_queue[g_flushRd];
+    g_flushWr++;
+    Serial.printf("FLUSH[%d]: FAIL (%d)\n", g_flushRd, rc);
+  }
+  g_flushLastMs = millis();
+  g_flushRd++;
 }
 
 // ── OTA UPDATE ───────────────────────
-// GitHub releases rispondono 302 → CDN; HTTPUpdate non può seguire redirect
-// autonomamente in questa versione, quindi lo risolviamo prima con HTTPClient.
-static String resolveOtaUrl(const String& url) {
+// Segue la catena di redirect (GitHub → CDN, max 3 hop) prima di passare l'URL
+// a HTTPUpdate che non gestisce autonomamente i redirect.
+static String resolveOtaUrl(const String& startUrl) {
   const char* hdrKeys[] = {"Location"};
-  String loc = "";
-  if (url.startsWith("https")) {
-    WiFiClientSecure c; c.setInsecure(); HTTPClient h;
-    h.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-    h.collectHeaders(hdrKeys, 1);
-    if (h.begin(c, url)) {
-      int code = h.GET();
-      if (code >= 300 && code < 400) loc = h.header("Location");
-      h.end();
+  String url = startUrl;
+  for (int hop = 0; hop < 3; hop++) {
+    String loc = "";
+    if (url.startsWith("https")) {
+      WiFiClientSecure c; c.setCACert(ROOT_CA); HTTPClient h;
+      h.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+      h.collectHeaders(hdrKeys, 1);
+      if (h.begin(c, url)) {
+        int code = h.GET();
+        if (code >= 300 && code < 400) loc = h.header("Location");
+        h.end();
+      }
+    } else {
+      WiFiClient c; HTTPClient h;
+      h.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+      h.collectHeaders(hdrKeys, 1);
+      if (h.begin(c, url)) {
+        int code = h.GET();
+        if (code >= 300 && code < 400) loc = h.header("Location");
+        h.end();
+      }
     }
-  } else {
-    WiFiClient c; HTTPClient h;
-    h.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-    h.collectHeaders(hdrKeys, 1);
-    if (h.begin(c, url)) {
-      int code = h.GET();
-      if (code >= 300 && code < 400) loc = h.header("Location");
-      h.end();
-    }
+    if (loc.length() <= 8) break;
+    Serial.printf("OTA redirect %d: %s\n", hop + 1, loc.c_str());
+    url = loc;
   }
-  Serial.printf("OTA URL risolto: %s\n", loc.length() > 8 ? loc.c_str() : "(nessun redirect)");
-  return (loc.length() > 8) ? loc : url;
+  Serial.printf("OTA URL finale: %s\n", url.c_str());
+  return url;
 }
 
 void doOTA(String url, String newVersion) {
@@ -767,7 +835,7 @@ void doOTA(String url, String newVersion) {
   httpUpdate.rebootOnUpdate(true);
   t_httpUpdate_return ret;
   if (finalUrl.startsWith("https")) {
-    WiFiClientSecure client; client.setInsecure();
+    WiFiClientSecure client; client.setCACert(ROOT_CA);
     ret = httpUpdate.update(client, finalUrl);
   } else {
     WiFiClient client;
@@ -789,11 +857,17 @@ void doOTA(String url, String newVersion) {
 void sendHeartbeat() {
   if (millis() - g_lastHeartbeat < HEARTBEAT_MS) return;
   g_lastHeartbeat = millis();
+
+  char eReader[130], eCompany[130], eSede[130];
+  jsonEscape(cfg.readerId,  eReader,  sizeof(eReader));
+  jsonEscape(cfg.companyId, eCompany, sizeof(eCompany));
+  jsonEscape(cfg.sede,      eSede,    sizeof(eSede));
+
   snprintf(g_payload, sizeof(g_payload),
     "{\"reader_id\":\"%s\",\"company_id\":\"%s\",\"firmware\":\"%s\",\"queue\":%d"
     ",\"sede\":\"%s\",\"nfc_ok\":%s,\"display_ok\":%s}",
-    cfg.readerId, cfg.companyId, FW_VERSION, g_queueSize,
-    cfg.sede, g_rfidOk ? "true" : "false", g_displayOk ? "true" : "false");
+    eReader, eCompany, FW_VERSION, g_queueSize,
+    eSede, g_rfidOk ? "true" : "false", g_displayOk ? "true" : "false");
 
   snprintf(g_url, sizeof(g_url), "%s/api/hardware/ping", cfg.backend);
   bool isHttps = strncmp(cfg.backend, "https", 5) == 0;
@@ -816,7 +890,7 @@ void sendHeartbeat() {
   };
 
   if (isHttps) {
-    WiFiClientSecure c; c.setInsecure(); HTTPClient h;
+    WiFiClientSecure c; c.setCACert(ROOT_CA); HTTPClient h;
     if (h.begin(c, g_url)) {
       h.setTimeout(10000); h.setReuse(false);
       h.addHeader("Content-Type", "application/json");
@@ -835,7 +909,10 @@ void sendHeartbeat() {
 
   // Riprova dopo 10s invece di 60s se il PING è fallito
   if (pingCode <= 0) {
-    g_lastHeartbeat = millis() - HEARTBEAT_MS + 10000UL;
+    unsigned long _now = millis();
+    g_lastHeartbeat = (_now >= HEARTBEAT_MS - 10000UL)
+                      ? _now - HEARTBEAT_MS + 10000UL
+                      : 0UL;
   }
 
   if (otaUrl.length() > 0 && otaVersion.length() > 0 && otaVersion != FW_VERSION) {
@@ -914,15 +991,19 @@ void taskRfid() {
   Serial.printf("TAG: %s\n", g_uid);
   beepOk();
 
+  char eReader[130], eCompany[130];
+  jsonEscape(cfg.readerId,  eReader,  sizeof(eReader));
+  jsonEscape(cfg.companyId, eCompany, sizeof(eCompany));
+
   String isoTs = getISOTimestamp();
   if (isoTs.length() > 0)
     snprintf(g_payload, sizeof(g_payload),
       "{\"uid\":\"%s\",\"reader_id\":\"%s\",\"company_id\":\"%s\",\"timestamp\":\"%s\",\"offline\":false}",
-      g_uid, cfg.readerId, cfg.companyId, isoTs.c_str());
+      g_uid, eReader, eCompany, isoTs.c_str());
   else
     snprintf(g_payload, sizeof(g_payload),
       "{\"uid\":\"%s\",\"reader_id\":\"%s\",\"company_id\":\"%s\",\"offline\":false}",
-      g_uid, cfg.readerId, cfg.companyId);
+      g_uid, eReader, eCompany);
 
   int code = httpPost("/api/hardware/tag", g_payload);
   if (code <= 0) {
@@ -945,7 +1026,7 @@ void taskWifi() {
       rfidInit();
       g_lastHeartbeat = millis() - HEARTBEAT_MS; // forza PING immediato per scaldare Railway
       sendHeartbeat();
-      queueFlush();
+      startQueueFlush();
       if (syncNTP()) { g_ntpSynced = true; showIdle(); }
       else showWaitingNtp();
     }
@@ -1071,7 +1152,7 @@ void startProvisioning() {
   const char* newBackend = p_b.getValue();
 
   // Controlla RESET
-  if (strncasecmp(newBackend, "RESET", 5) == 0) {
+  if (strcasecmp(newBackend, "RESET") == 0) {
     Serial.println("RESET richiesto dal portale");
     tft.fillScreen(C_BG);
     tft.setTextColor(C_RED, C_BG); tft.setTextSize(4);
@@ -1135,18 +1216,22 @@ void taskSerial() {
     Serial.printf("NFC OK:   %s\n", g_rfidOk    ? "SI" : "NO");
     Serial.printf("DISP OK:  %s\n", g_displayOk ? "SI" : "NO");
   } else if (cmdU == "FLUSH") {
-    queueFlush();
+    startQueueFlush();
   } else if (cmdU == "PROV") {
     Serial.println("Avvio provisioning da seriale...");
     startProvisioning();
   } else if (cmdU.startsWith("DEBOUNCE ")) {
     unsigned long ms = cmdU.substring(9).toInt();
-    if (ms >= 500 && ms <= 30000) { g_debouncMs = ms; Serial.printf("DEBOUNCE → %lu ms\n", ms); }
-    else Serial.println("Valore non valido (500-30000)");
+    if (ms >= 500 && ms <= 30000) {
+      g_debouncMs = ms; cfg.debounce = (uint32_t)ms; saveConfig();
+      Serial.printf("DEBOUNCE → %lu ms (salvato)\n", ms);
+    } else Serial.println("Valore non valido (500-30000)");
   } else if (cmdU.startsWith("DISPLAY ")) {
     unsigned long ms = cmdU.substring(8).toInt();
-    if (ms >= 500 && ms <= 10000) { g_resultTimeout = ms; Serial.printf("DISPLAY → %lu ms\n", ms); }
-    else Serial.println("Valore non valido (500-10000)");
+    if (ms >= 500 && ms <= 10000) {
+      g_resultTimeout = ms; cfg.displayMs = (uint32_t)ms; saveConfig();
+      Serial.printf("DISPLAY → %lu ms (salvato)\n", ms);
+    } else Serial.println("Valore non valido (500-10000)");
   } else if (cmdU.startsWith("THEME ")) {
     int t = cmdU.substring(6).toInt();
     if (t >= 0 && t < THEME_COUNT) {
@@ -1176,7 +1261,8 @@ void setup() {
   tft.setRotation(1);
   g_clockSprite.createSprite(CLK_SPR_W, CLK_SPR_H);
   g_dateSprite.createSprite(DATE_SPR_W, DATE_SPR_H);
-  g_displayOk = true;  // se siamo qui il display ha risposto correttamente
+  g_displayOk = (tft.width() == 480 && tft.height() == 320);
+  if (!g_displayOk) Serial.println("WARN: display dimensioni inattese");
 
   // Carica config (e tema) prima della splash
   bool hasConfig = loadConfig();
@@ -1241,7 +1327,7 @@ void setup() {
     rfidInit(); beepOk();
     g_lastHeartbeat = millis() - HEARTBEAT_MS; // forza PING immediato per scaldare Railway
     sendHeartbeat();
-    queueFlush();
+    startQueueFlush();
     if (syncNTP()) { g_ntpSynced = true; showIdle(); }
     else showWaitingNtp();
   } else {
@@ -1285,6 +1371,7 @@ void loop() {
   taskAdmin();
   taskRfid();
   sendHeartbeat();
+  taskQueueFlush();
   taskRfidHealth();
   delay(50);
 }
