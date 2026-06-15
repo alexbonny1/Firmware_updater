@@ -298,6 +298,7 @@ void doOTA(const String& url, const String& newVersion) {
   // Test connettività al server
   Serial.println("Test connettività al server...");
   bool canConnect = false;
+
   if (finalUrl.startsWith("https")) {
     WiFiClientSecure c; c.setCACert(ROOT_CA);
     c.setTimeout(5000);
@@ -307,6 +308,18 @@ void doOTA(const String& url, const String& newVersion) {
       c.stop();
     } else {
       Serial.println("✗ Connessione HTTPS a github.com FALLITA");
+
+      // Fallback: prova HTTP non-secure per diagnostica
+      Serial.println("Tentativo fallback HTTP...");
+      WiFiClient c2;
+      c2.setTimeout(5000);
+      if (c2.connect("github.com", 80)) {
+        Serial.println("✓ Connessione HTTP funziona (problema certificato SSL?)");
+        // Ma non possiamo scaricare il firmware via HTTP da GitHub
+        c2.stop();
+      } else {
+        Serial.println("✗ Anche HTTP fallisce (firewall?)");
+      }
     }
   }
 
@@ -314,10 +327,11 @@ void doOTA(const String& url, const String& newVersion) {
     Serial.println("ERRORE: Impossibile connettere al server OTA");
     tft.fillScreen(C_BLACK);
     tft.setTextColor(C_RED, C_BLACK); tft.setTextSize(2);
-    tft.setCursor(40, 140); tft.print("Connessione fallita");
+    tft.setCursor(40, 100); tft.print("OTA non disponibile");
     tft.setTextSize(1);
-    tft.setCursor(40, 165); tft.print("Non raggiung github.com");
-    delay(3000);
+    tft.setCursor(40, 140); tft.print("Firewall blocca:");
+    tft.setCursor(40, 160); tft.print("github.com");
+    delay(5000);
     return;
   }
 
