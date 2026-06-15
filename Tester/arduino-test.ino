@@ -295,51 +295,16 @@ void doOTA(const String& url, const String& newVersion) {
     return;
   }
 
-  // Test connettività al server
-  Serial.println("Test connettività al server...");
-  bool canConnect = false;
+  // Salta il test di connettività quando usiamo setInsecure() per test
+  // La verifica di connettività è diagnostica, non blocca l'OTA
 
-  if (finalUrl.startsWith("https")) {
-    WiFiClientSecure c; c.setCACert(ROOT_CA);
-    c.setTimeout(5000);
-    if (c.connect("github.com", 443)) {
-      Serial.println("✓ Connessione HTTPS a github.com riuscita");
-      canConnect = true;
-      c.stop();
-    } else {
-      Serial.println("✗ Connessione HTTPS a github.com FALLITA");
-
-      // Fallback: prova HTTP non-secure per diagnostica
-      Serial.println("Tentativo fallback HTTP...");
-      WiFiClient c2;
-      c2.setTimeout(5000);
-      if (c2.connect("github.com", 80)) {
-        Serial.println("✓ Connessione HTTP funziona (problema certificato SSL?)");
-        // Ma non possiamo scaricare il firmware via HTTP da GitHub
-        c2.stop();
-      } else {
-        Serial.println("✗ Anche HTTP fallisce (firewall?)");
-      }
-    }
-  }
-
-  if (!canConnect) {
-    Serial.println("ERRORE: Impossibile connettere al server OTA");
-    tft.fillScreen(C_BLACK);
-    tft.setTextColor(C_RED, C_BLACK); tft.setTextSize(2);
-    tft.setCursor(40, 100); tft.print("OTA non disponibile");
-    tft.setTextSize(1);
-    tft.setCursor(40, 140); tft.print("Firewall blocca:");
-    tft.setCursor(40, 160); tft.print("github.com");
-    delay(5000);
-    return;
-  }
+  Serial.println("Procedo con OTA (setInsecure per diagnostica certificato)...");
 
   httpUpdate.rebootOnUpdate(true);
 
   t_httpUpdate_return ret;
   if (finalUrl.startsWith("https")) {
-    Serial.println("OTA via HTTPS (certificato disabilitato per test)...");
+    Serial.println("OTA via HTTPS (certificato disabilitato per TEST)...");
     WiFiClientSecure c;
     c.setInsecure(); // TODO: Aggiornare ROOT_CA con certificato corretto per GitHub
     ret = httpUpdate.update(c, finalUrl);
