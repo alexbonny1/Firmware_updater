@@ -316,9 +316,6 @@ void showIdle() {
 
   drawWifiBars(rssiToBars());
 
-  tft.setTextColor(C_TEXT, C_BG);
-  tft.setTextSize(3);
-  tft.drawString("attesa lettura", FTR_TXT_X, FTR_TXT_Y);
 
   drawClock();
 }
