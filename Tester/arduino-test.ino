@@ -49,7 +49,7 @@
 #define FW_VERSION     "test-1.1"
 #define PREF_NAMESPACE "timrbry"
 #define HEARTBEAT_MS   30000UL
-#define RFID_TIMEOUT_MS 600000UL  // 10 minuti di attesa RFID prima di aprire portale
+#define RFID_TIMEOUT_MS 15000UL  // 15 secondi di attesa RFID prima di aprire portale
 
 // ── TAG ADMIN ────────────────────────
 #define ADMIN_UID        "3605CA06"
