@@ -268,6 +268,21 @@ void doOTA(const String& url, const String& newVersion) {
   tft.setCursor(40, 130); tft.printf("Versione: %s", newVersion.c_str());
   tft.setCursor(40, 160); tft.print("Non spegnere...");
 
+  // Verifica connettività PRIMA di scaricare
+  Serial.printf("WiFi status: %d (WL_CONNECTED=%d)\n", WiFi.status(), WL_CONNECTED);
+  Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
+  Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
+  Serial.printf("Memoria libera: %d bytes\n", ESP.getFreeHeap());
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("ERRORE: WiFi non connesso!");
+    tft.fillScreen(C_BLACK);
+    tft.setTextColor(C_RED, C_BLACK); tft.setTextSize(2);
+    tft.setCursor(40, 140); tft.print("WiFi disconnesso!");
+    delay(3000);
+    return;
+  }
+
   String finalUrl = resolveOtaUrl(url);
   Serial.printf("URL finale (dopo redirect): %s\n", finalUrl.c_str());
 
@@ -280,10 +295,33 @@ void doOTA(const String& url, const String& newVersion) {
     return;
   }
 
-  httpUpdate.rebootOnUpdate(true);
+  // Test connettività al server
+  Serial.println("Test connettività al server...");
+  bool canConnect = false;
+  if (finalUrl.startsWith("https")) {
+    WiFiClientSecure c; c.setCACert(ROOT_CA);
+    c.setTimeout(5000);
+    if (c.connect("github.com", 443)) {
+      Serial.println("✓ Connessione HTTPS a github.com riuscita");
+      canConnect = true;
+      c.stop();
+    } else {
+      Serial.println("✗ Connessione HTTPS a github.com FALLITA");
+    }
+  }
 
-  Serial.printf("WiFi status: %d\n", WiFi.status());
-  Serial.printf("Memoria libera: %d bytes\n", ESP.getFreeHeap());
+  if (!canConnect) {
+    Serial.println("ERRORE: Impossibile connettere al server OTA");
+    tft.fillScreen(C_BLACK);
+    tft.setTextColor(C_RED, C_BLACK); tft.setTextSize(2);
+    tft.setCursor(40, 140); tft.print("Connessione fallita");
+    tft.setTextSize(1);
+    tft.setCursor(40, 165); tft.print("Non raggiung github.com");
+    delay(3000);
+    return;
+  }
+
+  httpUpdate.rebootOnUpdate(true);
 
   t_httpUpdate_return ret;
   if (finalUrl.startsWith("https")) {
