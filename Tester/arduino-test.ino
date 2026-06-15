@@ -230,12 +230,14 @@ static String resolveOtaUrl(const String& startUrl) {
   for (int hop = 0; hop < 3; hop++) {
     String loc = "";
     if (url.startsWith("https")) {
-      WiFiClientSecure c; c.setCACert(ROOT_CA);
+      WiFiClientSecure c;
+      c.setInsecure(); // Necessario per seguire redirect GitHub → CDN
       HTTPClient h;
       h.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
       h.collectHeaders(hdrKeys, 1);
       if (h.begin(c, url)) {
         int code = h.GET();
+        Serial.printf("Redirect hop %d: code %d\n", hop, code);
         if (code >= 300 && code < 400) loc = h.header("Location");
         h.end();
       }
