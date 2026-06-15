@@ -273,18 +273,17 @@ void doOTA(const String& url, const String& newVersion) {
 void taskHeartbeat() {
   if (millis() - g_lastHeartbeat < HEARTBEAT_MS) return;
   g_lastHeartbeat = millis();
-  if (g_backendUrl.length() == 0 || WiFi.status() != WL_CONNECTED) return;
+  if (!g_configValid || cfg.backend[0] == '\0' || WiFi.status() != WL_CONNECTED) return;
 
-  // Stesso payload POST del firmware principale
   char payload[256];
   snprintf(payload, sizeof(payload),
     "{\"reader_id\":\"%s\",\"company_id\":\"%s\",\"firmware\":\"%s\","
     "\"queue\":0,\"sede\":\"%s\",\"nfc_ok\":%s,\"display_ok\":true}",
-    g_readerId.c_str(), g_companyId.c_str(), FW_VERSION,
-    g_sede.c_str(), g_rfidOk ? "true" : "false");
+    cfg.readerId, cfg.companyId, FW_VERSION,
+    cfg.sede, g_rfidOk ? "true" : "false");
 
   char url[256];
-  snprintf(url, sizeof(url), "%s/api/hardware/ping", g_backendUrl.c_str());
+  snprintf(url, sizeof(url), "%s/api/hardware/ping", cfg.backend);
   String otaUrl = "", otaVersion = "";
   int pingCode = -1;
 
@@ -300,7 +299,8 @@ void taskHeartbeat() {
     }
   };
 
-  if (g_backendUrl.startsWith("https")) {
+  bool isHttps = strncmp(cfg.backend, "https", 5) == 0;
+  if (isHttps) {
     WiFiClientSecure c; c.setCACert(ROOT_CA); HTTPClient h;
     if (h.begin(c, url)) {
       h.setTimeout(10000); h.setReuse(false);
@@ -316,7 +316,6 @@ void taskHeartbeat() {
     }
   }
 
-  // Se ping fallisce, riprova prima (10s)
   if (pingCode <= 0) {
     unsigned long _now = millis();
     g_lastHeartbeat = (_now >= HEARTBEAT_MS - 10000UL)
