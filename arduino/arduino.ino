@@ -101,9 +101,10 @@
 #define C_WIFI    0x64E6   // verde barre WiFi
 
 // Colori tema (aggiornati da applyTheme)
-uint16_t C_BG   = C_BLACK;
-uint16_t C_TEXT = C_WHITE;
-uint16_t C_DIM  = 0x4208;
+uint16_t C_BG     = C_BLACK;
+uint16_t C_TEXT   = C_WHITE;
+uint16_t C_DIM    = 0x4208;
+uint16_t C_YELLOW_DYN = C_YELLOW;
 
 // ── OGGETTI ──────────────────────────
 MFRC522     rfid(PIN_RC522_SS, PIN_RC522_RST);
@@ -185,9 +186,10 @@ static void jsonEscape(const char* src, char* dst, size_t maxLen) {
 // ── TEMA ─────────────────────────────
 void applyTheme(uint8_t idx) {
   bool dark = (idx == 0);
-  C_BG   = dark ? C_BLACK : C_WHITE;
-  C_TEXT = dark ? C_WHITE : C_BLACK;
-  C_DIM  = dark ? (uint16_t)0x4208 : (uint16_t)0xC618;
+  C_BG        = dark ? C_BLACK : C_WHITE;
+  C_TEXT      = dark ? C_WHITE : C_BLACK;
+  C_DIM       = dark ? (uint16_t)0x4208 : (uint16_t)0xC618;
+  C_YELLOW_DYN = dark ? (uint16_t)C_YELLOW : (uint16_t)0xAE00; // Giallo puro scuro nel tema chiaro
 }
 
 // ── WIFI SIGNAL ──────────────────────
@@ -291,7 +293,7 @@ void drawClock() {
                       : "--:--";
 
   int textWidth = tft.textWidth(oraDisplay);
-  int x = (480 - textWidth) / 2 - 20;         // Centra orizzontalmente
+  int x = (480 - textWidth) / 2 ;         // Centra orizzontalmente
   int y = CLK_Y;                    // Posiziona verticalmente
 
   tft.drawString(oraDisplay, x, y);
@@ -314,9 +316,7 @@ void showIdle() {
 
   drawWifiBars(rssiToBars());
 
-  tft.setTextColor(C_TEXT, C_BG);
-  tft.setTextSize(3);
-  tft.drawString("attesa lettura", FTR_TXT_X, FTR_TXT_Y);
+
 
   drawClock();
 }
@@ -342,7 +342,7 @@ void showResult(String tipo, String nome, String orario) {
     tft.drawString(nome, (480 - nw) / 2 > 10 ? (480 - nw) / 2 : 10, 175);
   }
   if (orario.length() > 0) {
-    tft.setTextColor(C_YELLOW, bg); tft.setTextSize(2);
+    tft.setTextColor(C_YELLOW_DYN, bg); tft.setTextSize(2);
     int ow = (int)orario.length() * 12;
     tft.drawString(orario, (480 - ow) / 2 > 10 ? (480 - ow) / 2 : 10, 250);
   }
@@ -354,7 +354,7 @@ void drawAdmin() {
   tft.fillScreen(C_BG);
 
   tft.drawBitmap(LOGO_X, LOGO_Y, image_IMG_9600_bits, LOGO_W, LOGO_H, C_ACCENT);
-  tft.setTextColor(C_YELLOW, C_BG); tft.setTextSize(2);
+  tft.setTextColor(C_YELLOW_DYN, C_BG); tft.setTextSize(2);
   tft.drawString("CONFIGURAZIONE", HDR_TXT_X, HDR_TXT_Y);
 
   int y = 80;
@@ -373,7 +373,7 @@ void drawAdmin() {
   ADM_ROW("Sede:     ", cfg.sede[0] ? cfg.sede : "-",             C_TEXT)
   ADM_ROW("Tema:     ", cfg.theme == 0 ? "Scuro" : "Chiaro",      C_TEXT)
   ADM_ROW("NTP:      ", g_ntpSynced ? "OK" : "NO SYNC",           g_ntpSynced ? C_GREEN : C_RED)
-  ADM_ROW("Queue:    ", qStr,                                      g_queueSize > 0 ? C_YELLOW : C_TEXT)
+  ADM_ROW("Queue:    ", qStr,                                      g_queueSize > 0 ? C_YELLOW_DYN : C_TEXT)
   ADM_ROW("FW:       ", FW_VERSION,                               C_TEXT)
   ADM_ROW("NFC:      ", g_rfidOk ? "OK" : "ERRORE",               g_rfidOk ? C_GREEN : C_RED)
 
@@ -407,11 +407,11 @@ void showWaitingNtp() {
   tft.setTextColor(C_TEXT, C_BG);
   String placeholder = "--:--";
   int ph_width = tft.textWidth(placeholder);
-  int ph_x = (480 - ph_width) / 2 - 20;
+  int ph_x = (480 - ph_width) / 2 ;
   tft.drawString(placeholder, ph_x, CLK_Y);
   tft.setTextFont(1);                    // ← RIPRISTINA font 1 (default impostato nel setup)
 
-  tft.setTextColor(C_YELLOW, C_BG); tft.setTextSize(3);
+  tft.setTextColor(C_YELLOW_DYN, C_BG); tft.setTextSize(3);
   tft.drawString(g_wifiOffline ? "attesa WiFi..." : "sync NTP...", 50, FTR_TXT_Y);
 
   g_lastNtpRetry = millis();
@@ -676,7 +676,7 @@ void doOTA(String url, String newVersion) {
   char verStr[32];
   snprintf(verStr, sizeof(verStr), "v%s -> v%s", FW_VERSION, newVersion.c_str());
   tft.drawString(verStr, 40, 150);
-  tft.setTextColor(C_YELLOW, C_BG); tft.setTextSize(2);
+  tft.setTextColor(C_YELLOW_DYN, C_BG); tft.setTextSize(2);
   tft.drawString("Non spegnere...", 80, 220);
 
   String finalUrl = resolveOtaUrl(url);
