@@ -1,10 +1,9 @@
 /*
  * timbry NFC Reader Firmware
  * ESP32-WROOM + RC522 + ILI9488 TFT 480x320 + Buzzer
- * v3.1
- * 
- 
- * PIN MAP:  
+ * v3.3
+ *
+ * PIN MAP:
  * ─────────────────────────────────────
  * TFT ILI9488 (SPI)
  *   MOSI → GPIO 23 / SCK → GPIO 18
@@ -14,45 +13,20 @@
  *   MOSI → GPIO 23 / MISO → GPIO 19
  *   SCK  → GPIO 18 / SS   → GPIO 21 / RST → GPIO 22
  * BUZZER → GPIO 33
- * ─────────────────────────────────────
- * User_Setup.h:
- *   #define ILI9488_DRIVER
- *   #define TFT_MOSI 23 / TFT_SCLK 18 / TFT_CS 15
- *   #define TFT_DC 2 / TFT_RST 4
- *   #define SPI_FREQUENCY 27000000
  *
- * TAG ADMIN: 3605CA06
- *   1a lettura → mostra config (schermata admin)
- *   2a lettura entro 60s → entra in PROVISIONING (WiFi portal)
- *     Nel portale puoi:
- *       - cambiare Backend URL, Reader ID, Company ID, Tema, Debounce
- *       - scrivere "RESET" nel campo Backend per cancellare tutto
- *   timeout 60s → torna normale senza fare nulla
+ * TAG ADMIN: 3605CA06 / F917C906
+ *   1a lettura → schermata configurazione
+ *   2a lettura entro 60s → entra in PROVISIONING (portale WiFi)
+ *   timeout 60s → torna in idle
  *
  * COMANDI SERIALI:
- *   RESET                 → cancella config e riavvia
- *   STATUS                → stampa stato
- *   FLUSH                 → svuota coda offline
- *   DEBOUNCE <ms>         → debounce tag (500-30000)
- *   DISPLAY <ms>          → durata schermata risultato (500-10000)
- *   THEME <0-7>           → cambia tema al volo
- *   PROV                  → entra in provisioning da seriale
- *
- * TEMI (campo "Tema" nel portale):
- *   0 = Nero
- *   1 = Blu navy
- *   2 = Verde scuro
- *   3 = Viola
- *   4 = Bianco
- *   5 = Grigio
- *   6 = Bordeaux
- *   7 = Arancio scuro
- *   8 = Teal
- *
- * NOTE TEMA BIANCO/GRIGIO:
- *   Su temi chiari (Bianco, Grigio) il testo dell'orologio
- *   diventa nero e il testo data diventa blu scuro per
- *   garantire leggibilità.
+ *   RESET           → cancella config e riavvia
+ *   STATUS          → stampa stato corrente
+ *   FLUSH           → svuota coda offline
+ *   DEBOUNCE <ms>   → debounce tag (500-30000)
+ *   DISPLAY <ms>    → durata schermata risultato (500-10000)
+ *   THEME <0|1>     → 0=scuro, 1=chiaro
+ *   PROV            → entra in provisioning
  */
 
 #include <Arduino.h>
@@ -70,6 +44,7 @@
 #include <time.h>
 #include "esp_log.h"
 #include "esp_wifi.h"
+#include "lopaka_assets.h"
 
 // ── PIN ──────────────────────────────
 #define PIN_RC522_SS    21
@@ -81,87 +56,58 @@
 #define TFT_BL_PIN      32
 
 // ── CONFIG ───────────────────────────
-#define FW_VERSION          "3.2"
-#define PREF_NAMESPACE      "timrbry"
-#define QUEUE_MAX           100
-#define HEARTBEAT_MS        60000UL
-#define DEBOUNCE_DEFAULT    5000UL
-#define RECONNECT_MS        10000UL
-#define NTP_SERVER          "pool.ntp.org"
-#define TZ_POSIX            "CET-1CEST,M3.5.0,M10.5.0/3"
+#define FW_VERSION       "3.3"
+#define PREF_NAMESPACE   "timrbry"
+#define QUEUE_MAX        100
+#define HEARTBEAT_MS     60000UL
+#define DEBOUNCE_DEFAULT 5000UL
+#define RECONNECT_MS     10000UL
+#define NTP_SERVER       "pool.ntp.org"
+#define TZ_POSIX         "CET-1CEST,M3.5.0,M10.5.0/3"
+#define NTP_RETRY_MS     10000UL
 
 // ── TAG ADMIN ────────────────────────
-#define ADMIN_UID           "3605CA06"
-#define ADMIN_UID_2         "F917C906"
-#define ADMIN_TIMEOUT_MS    60000UL
+#define ADMIN_UID        "3605CA06"
+#define ADMIN_UID_2      "F917C906"
+#define ADMIN_TIMEOUT_MS 60000UL
 
-// ── LAYOUT ───────────────────────────
-#define HDR_H     40
-#define FTR_Y     285
-#define CLK_SIZE  8
-#define CLK_SPR_W 240   // 5 chars × 6px × size 8
-#define CLK_SPR_H 64    // 8px × size 8
-#define CLK_SPR_X 120   // (480 - 240) / 2
-#define CLK_Y     120
-#define DATE_SIZE  3
-#define DATE_SPR_W 180  // 10 chars × 6px × size 3
-#define DATE_SPR_H 24   // 8px × size 3
-#define DATE_X     150  // (480 - 180) / 2
-#define DATE_Y     235
+// ── LAYOUT (design Lopaka, 480×320) ──
+#define LOGO_X      14
+#define LOGO_Y      13
+#define LOGO_W      58
+#define LOGO_H      50
+#define HDR_TXT_X   83
+#define HDR_TXT_Y   17
+#define DATE_TXT_X  82
+#define DATE_TXT_Y  45
+#define WIFI_X     435
+#define WIFI_Y      11
+#define CLK_X       39
+#define CLK_Y      126
+#define CLK_SIZE    14
+#define CLK_W      420   // 5 chars × 6px × size 14
+#define CLK_H      112   // 8px × size 14
+#define FTR_TXT_X  118
+#define FTR_TXT_Y  278
 
 // ── COLORI FISSI ─────────────────────
-#define C_WHITE    0xFFFF
-#define C_BLACK    0x0000
-#define C_GREEN    0x07E0
-#define C_RED      0xF800
-#define C_YELLOW   0xFFE0
-#define C_ORANGE   0xFC00
-#define C_GRAY     0x8410
-#define C_CYAN     0x07FF
-#define C_TIMBRY   0x051F   // azzurro ~#0099FF
-#define C_DARKBLUE 0x000F   // blu scuro per testo su sfondo chiaro
+#define C_GREEN   0x07E0
+#define C_RED     0xF800
+#define C_YELLOW  0xFFE0
+#define C_ORANGE  0xFC00
+#define C_WHITE   0xFFFF
+#define C_BLACK   0x0000
+#define C_ACCENT  0x02BA   // blu logo Timbry
+#define C_WIFI    0x64E6   // verde barre WiFi
 
-// ── TEMI ─────────────────────────────
-// bg        = colore sfondo principale
-// header    = colore header e footer
-// textClock = colore testo orologio grande
-// textDate  = colore testo data
-// light     = true se sfondo chiaro (adatta testo header)
-struct Theme {
-  uint16_t    bg;
-  uint16_t    header;
-  uint16_t    textClock;
-  uint16_t    textDate;
-  bool        light;
-  const char* name;
-};
-
-static const Theme THEMES[] = {
-  // bg        header    clock     date      light  nome
-  { 0x0000,  0x1082,  C_WHITE,  C_CYAN,   false, "Nero"         }, // 0
-  { 0x000D,  0x0010,  C_WHITE,  C_CYAN,   false, "Blu"          }, // 1
-  { 0x0200,  0x0180,  C_WHITE,  C_CYAN,   false, "Verde"        }, // 2
-  { 0x1008,  0x2010,  C_WHITE,  C_CYAN,   false, "Viola"        }, // 3
-  { 0xFFFF,  0xC618,  C_BLACK,  C_DARKBLUE, true, "Bianco"      }, // 4
-  { 0x8C51,  0x6B4D,  C_WHITE,  C_WHITE,  false, "Grigio"       }, // 5
-  { 0x4000,  0x2800,  C_WHITE,  C_YELLOW, false, "Bordeaux"     }, // 6
-  { 0x6200,  0x4100,  C_WHITE,  C_YELLOW, false, "Arancio sc."  }, // 7
-  { 0x0410,  0x0208,  C_WHITE,  C_CYAN,   false, "Teal"         }, // 8
-};
-#define THEME_COUNT 9
-
-// Colori attivi (aggiornati da applyTheme)
-uint16_t C_BG         = THEMES[0].bg;
-uint16_t C_HEADER     = THEMES[0].header;
-uint16_t C_CLK_TEXT   = THEMES[0].textClock;
-uint16_t C_DATE_TEXT  = THEMES[0].textDate;
-bool     g_themeLight = false;
+// Colori tema (aggiornati da applyTheme)
+uint16_t C_BG   = C_BLACK;
+uint16_t C_TEXT = C_WHITE;
+uint16_t C_DIM  = 0x4208;
 
 // ── OGGETTI ──────────────────────────
 MFRC522     rfid(PIN_RC522_SS, PIN_RC522_RST);
 TFT_eSPI    tft = TFT_eSPI();
-TFT_eSprite g_clockSprite = TFT_eSprite(&tft);
-TFT_eSprite g_dateSprite  = TFT_eSprite(&tft);
 Preferences prefs;
 
 // ── STRUTTURE ────────────────────────
@@ -170,7 +116,7 @@ struct Config {
   char     readerId[64];
   char     companyId[64];
   char     sede[64];
-  uint8_t  theme;
+  uint8_t  theme;     // 0=scuro, 1=chiaro
   uint32_t debounce;
   uint32_t displayMs;
   bool     valid;
@@ -179,8 +125,6 @@ Config cfg;
 
 struct DisplayState {
   String status;
-  String dipendente;
-  String orario;
   String oraCorrente;
 };
 DisplayState ds;
@@ -214,11 +158,10 @@ bool          g_adminMode       = false;
 unsigned long g_adminTimer      = 0;
 bool          g_waitingNtp      = false;
 unsigned long g_lastNtpRetry    = 0;
-#define NTP_RETRY_MS  10000UL
 
 // ── QUEUE FLUSH NON-BLOCCANTE ────────
-int           g_flushRd     = -1;   // -1=idle, >=0=indice corrente
-int           g_flushWr     = 0;    // indice compattazione elementi falliti
+int           g_flushRd     = -1;
+int           g_flushWr     = 0;
 unsigned long g_flushLastMs = 0;
 
 // forward declarations
@@ -241,86 +184,44 @@ static void jsonEscape(const char* src, char* dst, size_t maxLen) {
 
 // ── TEMA ─────────────────────────────
 void applyTheme(uint8_t idx) {
-  if (idx >= THEME_COUNT) idx = 0;
-  C_BG        = THEMES[idx].bg;
-  C_HEADER    = THEMES[idx].header;
-  C_CLK_TEXT  = THEMES[idx].textClock;
-  C_DATE_TEXT = THEMES[idx].textDate;
-  g_themeLight = THEMES[idx].light;
+  bool dark = (idx == 0);
+  C_BG   = dark ? C_BLACK : C_WHITE;
+  C_TEXT = dark ? C_WHITE : C_BLACK;
+  C_DIM  = dark ? (uint16_t)0x4208 : (uint16_t)0xC618;
 }
 
-// ── SPLASH ───────────────────────────
-void drawSplashLogo() {
-  tft.fillScreen(C_BG);
+// ── WIFI SIGNAL ──────────────────────
+int rssiToBars() {
+  if (WiFi.status() != WL_CONNECTED) return 0;
+  int rssi = WiFi.RSSI();
+  if (rssi >= -55) return 4;
+  if (rssi >= -65) return 3;
+  if (rssi >= -75) return 2;
+  return 1;
+}
 
-  // Card centrale: leggermente più chiara/scura del bg
-  uint16_t cardBg = g_themeLight
-    ? tft.alphaBlend(200, C_BG, 0xC618)   // sui temi chiari: grigio chiaro
-    : (C_BG == 0x0000 ? 0x0841 : tft.alphaBlend(128, C_BG, 0x0000));
-
-  tft.fillRect(80, 60, 320, 160, cardBg);
-  tft.drawRect(80, 60, 320, 160, C_TIMBRY);
-
-  // Badge NFC
-  int16_t bx = 130, by = 90;
-  tft.drawRect(bx, by, 36, 48, C_TIMBRY);
-  tft.fillRect(bx+1, by+1, 34, 46, cardBg);
-  tft.drawRect(bx+8, by+12, 20, 24, C_TIMBRY);
-  tft.fillRect(bx+10, by+14, 16, 20, 0x051F);
-  for (int i = 0; i < 3; i++) {
-    tft.drawFastHLine(bx+5,  by+17+i*6, 3, C_TIMBRY);
-    tft.drawFastHLine(bx+28, by+17+i*6, 3, C_TIMBRY);
+// Disegna 4 barre WiFi in stile Lopaka (30×32px, bottom-aligned)
+void drawWifiBars(int x, int y, int bars) {
+  tft.fillRect(x, y, 30, 32, C_BG);
+  const int bw = 5, gap = 2;
+  const int heights[4] = {8, 16, 24, 32};
+  uint16_t activeColor = (bars == 0) ? (uint16_t)C_RED : (uint16_t)C_WIFI;
+  for (int i = 0; i < 4; i++) {
+    int bh = heights[i];
+    tft.fillRect(x + i * (bw + gap), y + (32 - bh), bw, bh,
+                 (i < bars) ? activeColor : C_DIM);
   }
-  tft.drawCircle(bx+36, by+24, 8,  C_TIMBRY);
-  tft.drawCircle(bx+36, by+24, 15, C_TIMBRY);
-  tft.drawCircle(bx+36, by+24, 22, 0x02DF);
-  tft.fillRect(bx-4, by-4, 42, 56, cardBg);
-  tft.drawRect(bx, by, 36, 48, C_TIMBRY);
-  tft.drawRect(bx+8, by+12, 20, 24, C_TIMBRY);
-
-  uint16_t titleColor = g_themeLight ? C_BLACK : C_WHITE;
-  tft.setTextColor(titleColor, cardBg);
-  tft.setTextSize(5);
-  tft.setCursor(185, 100);
-  tft.print("TIMBRY");
-
-  tft.drawFastHLine(185, 138, 190, C_TIMBRY);
-
-  tft.setTextColor(C_TIMBRY, cardBg);
-  tft.setTextSize(1);
-  tft.setCursor(185, 148);
-  tft.print("NFC READER  v");
-  tft.print(FW_VERSION);
-
-  uint16_t subtitleColor = g_themeLight ? 0x6B4D : C_GRAY;
-  tft.setTextColor(subtitleColor, C_BG);
-  tft.setTextSize(1);
-  tft.setCursor(170, 240);
-  tft.print("Sistema Presenze NFC");
 }
 
-// ── BUZZER ───────────────────────────
-void beepOk() {
-  tone(BUZZER_PIN, 1800, 80); delay(100);
-  tone(BUZZER_PIN, 2200, 80);
-}
-void beepErr() {
-  tone(BUZZER_PIN, 900, 150); delay(80);
-  tone(BUZZER_PIN, 700, 150);
-}
-void beepOffline() { tone(BUZZER_PIN, 1600, 100); }
-
-// ── NTP ──────────────────────────────
-bool syncNTP() {
-  configTzTime(TZ_POSIX, NTP_SERVER);
-  Serial.print("NTP sync");
-  unsigned long s = millis();
-  while (time(nullptr) < 1000000000UL) {
-    if (millis() - s > 8000) { Serial.println(" FAIL"); return false; }
-    delay(200); Serial.print(".");
-  }
-  Serial.println(" OK");
-  return true;
+// ── UTILITÀ TEMPO ────────────────────
+String getLocalDate() {
+  time_t now = time(nullptr);
+  if (now < 1000000000UL) return "--/--/----";
+  struct tm* t = localtime(&now);
+  char buf[12];
+  snprintf(buf, sizeof(buf), "%02d/%02d/%04d",
+    t->tm_mday, t->tm_mon + 1, t->tm_year + 1900);
+  return String(buf);
 }
 
 String getISOTimestamp() {
@@ -343,106 +244,74 @@ String getLocalTime() {
   return String(buf);
 }
 
+// ── BUZZER ───────────────────────────
+void beepOk()      { tone(BUZZER_PIN, 1800, 80); delay(100); tone(BUZZER_PIN, 2200, 80); }
+void beepErr()     { tone(BUZZER_PIN, 900, 150); delay(80);  tone(BUZZER_PIN, 700, 150); }
+void beepOffline() { tone(BUZZER_PIN, 1600, 100); }
+
+// ── NTP ──────────────────────────────
+bool syncNTP() {
+  configTzTime(TZ_POSIX, NTP_SERVER);
+  Serial.print("NTP sync");
+  unsigned long s = millis();
+  while (time(nullptr) < 1000000000UL) {
+    if (millis() - s > 8000) { Serial.println(" FAIL"); return false; }
+    delay(200); Serial.print(".");
+  }
+  Serial.println(" OK");
+  return true;
+}
+
 // ── RFID INIT ────────────────────────
 void rfidInit() {
   SPI.begin(PIN_RC522_SCK, PIN_RC522_MISO, PIN_RC522_MOSI, PIN_RC522_SS);
-  // RST basso → alto: forza hard reset garantendo stato noto dopo power cycle
+  // RST basso→alto: garantisce stato noto dopo power cycle
   pinMode(PIN_RC522_RST, OUTPUT);
   digitalWrite(PIN_RC522_RST, LOW);
   delay(10);
   digitalWrite(PIN_RC522_RST, HIGH);
-  delay(50); // tempo di avvio oscillatore (datasheet: ~37μs + margine)
+  delay(50);
   rfid.PCD_Init();
   delay(50);
   byte v = rfid.PCD_ReadRegister(MFRC522::VersionReg);
-  g_rfidOk = (v != 0x00 && v != 0xFF); // accetta tutti i cloni (es. 0x82, 0x88, 0x12)
+  g_rfidOk = (v != 0x00 && v != 0xFF);
   Serial.printf("RC522 version: 0x%02X %s\n", v, g_rfidOk ? "OK" : "WARN");
 }
 
 // ── DISPLAY ──────────────────────────
-void drawHeader() {
-  tft.fillRect(0, 0, 480, HDR_H, C_HEADER);
-
-  // Logo mini
-  int16_t lx = 6, ly = 8;
-  tft.drawRect(lx, ly, 12, 16, C_TIMBRY);
-  tft.fillRect(lx+1, ly+1, 10, 14, C_HEADER);
-  tft.drawRect(lx+3, ly+4, 6, 7, C_TIMBRY);
-  tft.drawCircle(lx+12, ly+8, 4, C_TIMBRY);
-  tft.drawCircle(lx+12, ly+8, 7, 0x02DF);
-  tft.fillRect(lx-1, ly-1, 14, 18, C_HEADER);
-  tft.drawRect(lx, ly, 12, 16, C_TIMBRY);
-  tft.drawRect(lx+3, ly+4, 6, 7, C_TIMBRY);
-
-  // Testi header: su temi chiari usa nero invece di bianco
-  uint16_t hTxt = g_themeLight ? C_BLACK : C_WHITE;
-
-  tft.setTextColor(C_TIMBRY, C_HEADER);
-  tft.setTextSize(1); tft.setCursor(22, 8);
-  tft.print("TIMBRY");
-
-  tft.setTextColor(hTxt, C_HEADER);
-  tft.setTextSize(1); tft.setCursor(22, 20);
-  tft.print(cfg.readerId[0] ? cfg.readerId : "reader");
-
-  tft.fillCircle(355, 20, 7, g_wifiOffline ? C_RED : C_GREEN);
-  tft.setTextColor(hTxt, C_HEADER);
-  tft.setTextSize(2); tft.setCursor(368, 12);
-  tft.print(g_wifiOffline ? "OFFLINE" : "ONLINE ");
-}
-
-void drawFooter() {
-  tft.fillRect(0, FTR_Y, 480, 320 - FTR_Y, C_HEADER);
-  uint16_t hTxt = g_themeLight ? C_BLACK : C_GRAY;
-  tft.setTextColor(hTxt, C_HEADER);
-  tft.setTextSize(1); tft.setCursor(162, FTR_Y + 12);
-  tft.print("Avvicina badge al lettore");
-  if (g_queueSize > 0) {
-    tft.setTextColor(C_YELLOW, C_HEADER);
-    tft.setCursor(340, FTR_Y + 12);
-    tft.print("Coda: "); tft.print(g_queueSize);
-  }
-}
 
 void drawClock() {
-  g_clockSprite.fillSprite(C_BG);
-  g_clockSprite.setTextColor(C_CLK_TEXT, C_BG);
-  g_clockSprite.setTextSize(CLK_SIZE);
-  int16_t tw = g_clockSprite.textWidth(ds.oraCorrente.length() > 0 ? ds.oraCorrente : "00:00");
-  g_clockSprite.setCursor((CLK_SPR_W - tw) / 2, 0);
-  if (ds.oraCorrente.length() > 0) g_clockSprite.print(ds.oraCorrente);
-  g_clockSprite.pushSprite(CLK_SPR_X, CLK_Y);
-}
-
-void drawDate() {
-  if (!g_ntpSynced) return;
-  time_t now = time(nullptr);
-  struct tm* t = localtime(&now);
-  char buf[16];
-  snprintf(buf, sizeof(buf), "%02d/%02d/%04d",
-    t->tm_mday, t->tm_mon + 1, t->tm_year + 1900);
-  g_dateSprite.fillSprite(C_BG);
-  g_dateSprite.setTextColor(C_DATE_TEXT, C_BG);
-  g_dateSprite.setTextSize(DATE_SIZE);
-  g_dateSprite.setCursor(0, 0);
-  g_dateSprite.print(buf);
-  g_dateSprite.pushSprite(DATE_X, DATE_Y);
+  tft.fillRect(CLK_X, CLK_Y, CLK_W, CLK_H, C_BG);
+  tft.setTextColor(C_TEXT, C_BG);
+  tft.setTextSize(CLK_SIZE);
+  tft.drawString(ds.oraCorrente.length() > 0 ? ds.oraCorrente : "--:--", CLK_X, CLK_Y);
 }
 
 void showIdle() {
   if (!g_ntpSynced) { g_waitingNtp = true; showWaitingNtp(); return; }
-  g_waitingNtp  = false;
-  ds.status     = "ATTESA";
-  ds.dipendente = "";
-  ds.orario     = "";
-  tft.fillRect(0, HDR_H, 480, FTR_Y - HDR_H, C_BG);
-  drawHeader(); drawClock(); drawDate(); drawFooter();
+  g_waitingNtp = false;
+  ds.status    = "ATTESA";
+
+  tft.fillScreen(C_BG);
+
+  tft.drawBitmap(LOGO_X, LOGO_Y, image_IMG_9600_bits, LOGO_W, LOGO_H, C_ACCENT);
+
+  tft.setTextColor(C_TEXT, C_BG);
+  tft.setTextSize(2);
+  tft.drawString(cfg.readerId[0] ? cfg.readerId : "Reader", HDR_TXT_X, HDR_TXT_Y);
+  tft.drawString(getLocalDate(), DATE_TXT_X, DATE_TXT_Y);
+
+  drawWifiBars(WIFI_X, WIFI_Y, rssiToBars());
+
+  tft.setTextColor(C_DIM, C_BG);
+  tft.setTextSize(3);
+  tft.drawString("attesa lettura", FTR_TXT_X, FTR_TXT_Y);
+
+  drawClock();
 }
 
 void showResult(String tipo, String nome, String orario) {
-  ds.status     = tipo;
-  ds.dipendente = nome;
-  ds.orario     = orario;
+  ds.status = tipo;
 
   uint16_t bg, fg;
   if      (tipo == "ENTRATA") { bg = 0x0320; fg = C_GREEN;  }
@@ -450,116 +319,83 @@ void showResult(String tipo, String nome, String orario) {
   else if (tipo == "ERRORE")  { bg = 0x4000; fg = C_ORANGE; }
   else                         { bg = 0x2104; fg = C_YELLOW; }
 
-  tft.fillRect(0, HDR_H, 480, FTR_Y - HDR_H, bg);
+  tft.fillScreen(bg);
 
-  tft.setTextColor(fg, bg); tft.setTextSize(6);
-  int16_t sw = tipo.length() * 36;
-  tft.setCursor(max((int16_t)10, (int16_t)((480 - sw) / 2)), HDR_H + 22);
-  tft.print(tipo);
+  tft.setTextColor(fg, bg); tft.setTextSize(5);
+  int sw = (int)tipo.length() * 30;
+  tft.drawString(tipo, (480 - sw) / 2 > 10 ? (480 - sw) / 2 : 10, 70);
 
   if (nome.length() > 0) {
     tft.setTextColor(C_WHITE, bg); tft.setTextSize(3);
-    int16_t nw = nome.length() * 18;
-    tft.setCursor(max((int16_t)10, (int16_t)((480 - nw) / 2)), HDR_H + 110);
-    tft.print(nome);
+    int nw = (int)nome.length() * 18;
+    tft.drawString(nome, (480 - nw) / 2 > 10 ? (480 - nw) / 2 : 10, 175);
   }
   if (orario.length() > 0) {
-    tft.setTextColor(C_YELLOW, bg); tft.setTextSize(3);
-    int16_t ow = orario.length() * 18;
-    tft.setCursor(max((int16_t)10, (int16_t)((480 - ow) / 2)), HDR_H + 165);
-    tft.print(orario);
+    tft.setTextColor(C_YELLOW, bg); tft.setTextSize(2);
+    int ow = (int)orario.length() * 12;
+    tft.drawString(orario, (480 - ow) / 2 > 10 ? (480 - ow) / 2 : 10, 250);
   }
 
-  drawHeader(); drawFooter();
   g_resultTimer = millis();
 }
 
-// Schermata admin: mostra config e istruzioni
-// 2a lettura → entrerà nel provisioning (non reset)
 void drawAdmin() {
-  tft.fillRect(0, HDR_H, 480, FTR_Y - HDR_H, C_BG);
+  tft.fillScreen(C_BG);
 
-  uint16_t bodyTxt = g_themeLight ? C_BLACK : C_WHITE;
-
+  tft.drawBitmap(LOGO_X, LOGO_Y, image_IMG_9600_bits, LOGO_W, LOGO_H, C_ACCENT);
   tft.setTextColor(C_YELLOW, C_BG); tft.setTextSize(2);
-  tft.setCursor(100, HDR_H + 8);
-  tft.print("-- CONFIGURAZIONE --");
+  tft.drawString("CONFIGURAZIONE", HDR_TXT_X, HDR_TXT_Y);
 
-  tft.setTextColor(bodyTxt, C_BG); tft.setTextSize(1);
-  int y = HDR_H + 32;
-#define ADMIN_ROW(label, value) \
-  if (y < FTR_Y - 16) { tft.setCursor(10, y); tft.print(label); tft.print(value); y += 18; }
+  int y = 80;
+  tft.setTextSize(1);
 
-  ADMIN_ROW("Backend: ", cfg.backend)
-  ADMIN_ROW("Reader:  ", cfg.readerId)
-  ADMIN_ROW("Company: ", cfg.companyId)
-  if (y < FTR_Y - 16) {
-    tft.setCursor(10, y); tft.print("Tema:    ");
-    tft.print(cfg.theme < THEME_COUNT ? THEMES[cfg.theme].name : "?");
-    tft.print(" ("); tft.print(cfg.theme); tft.print(")");
-    y += 18;
-  }
-  if (y < FTR_Y - 16) {
-    tft.setCursor(10, y); tft.print("WiFi:    ");
-    if (WiFi.status() == WL_CONNECTED) {
-      tft.print("OK  "); tft.print(WiFi.localIP().toString());
-    } else { tft.print("OFFLINE"); }
-    y += 18;
-  }
-  ADMIN_ROW("Queue:   ", g_queueSize)
-  ADMIN_ROW("NTP:     ", g_ntpSynced ? "OK" : "NO SYNC")
-  ADMIN_ROW("Time:    ", getISOTimestamp())
-  ADMIN_ROW("FW:      ", FW_VERSION)
-  ADMIN_ROW("Sede:    ", cfg.sede[0] ? cfg.sede : "(non impostata)")
+#define ADM_ROW(label, value, col) \
+  tft.setTextColor(C_DIM, C_BG); tft.drawString(label, 10, y); \
+  tft.setTextColor(col, C_BG);   tft.drawString(value, 10 + sizeof(label)*6, y); \
+  y += 18;
 
-  if (y < FTR_Y - 16) {
-    tft.setCursor(10, y); tft.print("NFC:     ");
-    tft.setTextColor(g_rfidOk ? C_GREEN : C_RED, C_BG);
-    tft.print(g_rfidOk ? "OK" : "ERRORE");
-    tft.setTextColor(bodyTxt, C_BG); y += 18;
-  }
-  if (y < FTR_Y - 16) {
-    tft.setCursor(10, y); tft.print("Display: ");
-    tft.setTextColor(g_displayOk ? C_GREEN : C_RED, C_BG);
-    tft.print(g_displayOk ? "OK" : "ERRORE");
-    tft.setTextColor(bodyTxt, C_BG); y += 28;
-  }
-#undef ADMIN_ROW
+  char qStr[6]; snprintf(qStr, sizeof(qStr), "%d", g_queueSize);
 
-  // Istruzione 2a lettura → provisioning (non reset!)
-  tft.setTextColor(C_CYAN, C_BG); tft.setTextSize(2);
-  tft.setCursor(30, y);
-  tft.print("Ripassare: ENTRA IN PORTALE");
-  y += 22;
+  ADM_ROW("Backend:  ", cfg.backend,                              C_TEXT)
+  ADM_ROW("Reader:   ", cfg.readerId,                             C_TEXT)
+  ADM_ROW("Company:  ", cfg.companyId,                            C_TEXT)
+  ADM_ROW("Sede:     ", cfg.sede[0] ? cfg.sede : "-",             C_TEXT)
+  ADM_ROW("Tema:     ", cfg.theme == 0 ? "Scuro" : "Chiaro",      C_TEXT)
+  ADM_ROW("NTP:      ", g_ntpSynced ? "OK" : "NO SYNC",           g_ntpSynced ? C_GREEN : C_RED)
+  ADM_ROW("Queue:    ", qStr,                                      g_queueSize > 0 ? C_YELLOW : C_TEXT)
+  ADM_ROW("FW:       ", FW_VERSION,                               C_TEXT)
+  ADM_ROW("NFC:      ", g_rfidOk ? "OK" : "ERRORE",               g_rfidOk ? C_GREEN : C_RED)
 
-  tft.setTextColor(C_GRAY, C_BG); tft.setTextSize(1);
-  tft.setCursor(30, y);
-  tft.print("(Nel portale puoi modificare o resettare tutto)");
-  y += 14;
-  tft.setCursor(30, y);
-  tft.print("Attendi 60s per annullare");
+#undef ADM_ROW
 
-  drawHeader(); drawFooter();
+  bool wifiOk = (WiFi.status() == WL_CONNECTED);
+  tft.setTextColor(C_DIM, C_BG); tft.drawString("WiFi:     ", 10, y);
+  tft.setTextColor(wifiOk ? (uint16_t)C_GREEN : (uint16_t)C_RED, C_BG);
+  tft.drawString(wifiOk ? WiFi.localIP().toString().c_str() : "OFFLINE", 10 + 10*6, y);
+  y += 28;
+
+  tft.setTextColor(C_ACCENT, C_BG); tft.setTextSize(2);
+  tft.drawString("Ripassare: ENTRA PORTALE", 10, y);
+  y += 28;
+  tft.setTextColor(C_DIM, C_BG); tft.setTextSize(1);
+  tft.drawString("Attendi 60s per annullare", 10, y);
 }
 
 void showWaitingNtp() {
   g_waitingNtp = true;
   tft.fillScreen(C_BG);
-  drawHeader();
-  tft.fillRect(0, FTR_Y, 480, 320 - FTR_Y, C_HEADER);
 
-  tft.setTextColor(C_YELLOW, C_BG); tft.setTextSize(4);
-  tft.setCursor(195, 65); tft.print("?:??");
+  tft.drawBitmap(LOGO_X, LOGO_Y, image_IMG_9600_bits, LOGO_W, LOGO_H, C_ACCENT);
+  tft.setTextColor(C_TEXT, C_BG); tft.setTextSize(2);
+  tft.drawString(cfg.readerId[0] ? cfg.readerId : "Reader", HDR_TXT_X, HDR_TXT_Y);
+  tft.drawString(getLocalDate(), DATE_TXT_X, DATE_TXT_Y);
+  drawWifiBars(WIFI_X, WIFI_Y, rssiToBars());
 
-  uint16_t bodyTxt = g_themeLight ? C_BLACK : C_WHITE;
-  tft.setTextColor(bodyTxt, C_BG); tft.setTextSize(2);
-  tft.setCursor(110, 145); tft.print("Orario non disponibile");
+  tft.setTextColor(C_DIM, C_BG); tft.setTextSize(CLK_SIZE);
+  tft.drawString("--:--", CLK_X, CLK_Y);
 
-  tft.setTextColor(C_YELLOW, C_BG); tft.setTextSize(1);
-  tft.setCursor(180, 180);
-  tft.print(g_wifiOffline ? "In attesa del WiFi..." : "Sincronizzazione NTP...");
-  tft.setCursor(160, 198);
-  tft.print("Le timbrature sono bloccate");
+  tft.setTextColor(C_YELLOW, C_BG); tft.setTextSize(3);
+  tft.drawString(g_wifiOffline ? "attesa WiFi..." : "sync NTP...", 50, FTR_TXT_Y);
 
   g_lastNtpRetry = millis();
 }
@@ -571,61 +407,60 @@ void taskNtpRetry() {
   g_lastNtpRetry = millis();
   Serial.println("NTP retry...");
   if (syncNTP()) { g_ntpSynced = true; g_waitingNtp = false; showIdle(); }
-  else {
-    uint16_t bodyTxt = g_themeLight ? C_BLACK : C_GRAY;
-    tft.fillRect(0, HDR_H + 180, 480, 30, C_BG);
-    tft.setTextColor(bodyTxt, C_BG); tft.setTextSize(1);
-    tft.setCursor(90, HDR_H + 185);
-    tft.print("Ultimo tentativo: "); tft.print(millis() / 1000); tft.print("s");
-  }
+  else { drawWifiBars(WIFI_X, WIFI_Y, rssiToBars()); }
 }
 
 void updateClock() {
   if (millis() - g_lastClockUpdate < 1000) return;
   g_lastClockUpdate = millis();
-
-  if (!g_ntpSynced) {
-    static bool lwOff2 = false;
-    if (lwOff2 != g_wifiOffline) { lwOff2 = g_wifiOffline; drawHeader(); }
-    return;
-  }
+  if (!g_ntpSynced) return;
 
   time_t now = time(nullptr);
   struct tm* t = localtime(&now);
-  char buf[8];
+  char buf[6];
   snprintf(buf, sizeof(buf), "%02d:%02d", t->tm_hour, t->tm_min);
   String newOra = String(buf);
 
-  static bool lwOff = false;
-  if (lwOff != g_wifiOffline) { lwOff = g_wifiOffline; drawHeader(); }
+  // Aggiorna barre WiFi se il segnale è cambiato
+  static int lastBars = -1;
+  int bars = rssiToBars();
+  if (bars != lastBars && ds.status == "ATTESA") {
+    lastBars = bars;
+    drawWifiBars(WIFI_X, WIFI_Y, bars);
+  }
 
+  // Aggiorna orologio solo quando i minuti cambiano
   if (ds.status == "ATTESA" && newOra != ds.oraCorrente) {
-    ds.oraCorrente = newOra; drawClock(); drawDate();
-  } else { ds.oraCorrente = newOra; }
+    ds.oraCorrente = newOra;
+    drawClock();
+  } else {
+    ds.oraCorrente = newOra;
+  }
 }
 
 // ── CONFIG NVS ───────────────────────
 bool loadConfig() {
   prefs.begin(PREF_NAMESPACE, true);
-  String backend    = prefs.getString("backend",    "");
-  String readerId   = prefs.getString("readerId",   "");
-  String companyId  = prefs.getString("companyId",  "");
-  String sede       = prefs.getString("sede",       "");
-  uint8_t  theme     = (uint8_t)prefs.getUInt("theme", 0);
-  uint32_t debounce  = prefs.getUInt("debounce",   (uint32_t)DEBOUNCE_DEFAULT);
-  uint32_t displayMs = prefs.getUInt("displayMs",  3000);
+  String backend    = prefs.getString("backend",   "");
+  String readerId   = prefs.getString("readerId",  "");
+  String companyId  = prefs.getString("companyId", "");
+  String sede       = prefs.getString("sede",      "");
+  uint8_t  rawTheme  = (uint8_t)prefs.getUInt("theme",     0);
+  uint32_t debounce  = prefs.getUInt("debounce",  (uint32_t)DEBOUNCE_DEFAULT);
+  uint32_t displayMs = prefs.getUInt("displayMs", 3000);
   prefs.end();
   if (backend.length() < 4 || readerId.length() < 2 || companyId.length() < 10) return false;
-  strlcpy(cfg.backend,    backend.c_str(),    sizeof(cfg.backend));
-  strlcpy(cfg.readerId,   readerId.c_str(),   sizeof(cfg.readerId));
-  strlcpy(cfg.companyId,  companyId.c_str(),  sizeof(cfg.companyId));
-  strlcpy(cfg.sede,       sede.c_str(),       sizeof(cfg.sede));
-  cfg.theme      = (theme < THEME_COUNT) ? theme : 0;
+  strlcpy(cfg.backend,   backend.c_str(),   sizeof(cfg.backend));
+  strlcpy(cfg.readerId,  readerId.c_str(),  sizeof(cfg.readerId));
+  strlcpy(cfg.companyId, companyId.c_str(), sizeof(cfg.companyId));
+  strlcpy(cfg.sede,      sede.c_str(),      sizeof(cfg.sede));
+  // Migrazione da vecchi 9 temi: solo il tema 4 (Bianco) era chiaro
+  cfg.theme      = (rawTheme == 4 || rawTheme == 1) ? 1 : 0;
   cfg.debounce   = (debounce >= 500 && debounce <= 30000) ? debounce : (uint32_t)DEBOUNCE_DEFAULT;
   cfg.displayMs  = (displayMs >= 500 && displayMs <= 10000) ? displayMs : 3000UL;
   cfg.valid      = true;
   applyTheme(cfg.theme);
-  g_debouncMs    = cfg.debounce;
+  g_debouncMs     = cfg.debounce;
   g_resultTimeout = cfg.displayMs;
   return true;
 }
@@ -719,11 +554,11 @@ int httpPost(const char* path, const char* payload) {
 // ── QUEUE FLUSH NON-BLOCCANTE ────────
 void startQueueFlush() {
   if (WiFi.status() != WL_CONNECTED || g_queueSize == 0) return;
-  if (g_flushRd >= 0) return;  // già in corso
+  if (g_flushRd >= 0) return;
   Serial.printf("FLUSH QUEUE avviato (%d elementi)...\n", g_queueSize);
   g_flushRd     = 0;
   g_flushWr     = 0;
-  g_flushLastMs = millis() - 300;  // forza invio immediato del primo elemento
+  g_flushLastMs = millis() - 300;
 }
 
 void taskQueueFlush() {
@@ -761,11 +596,11 @@ void taskQueueFlush() {
   if (isHttps) {
     WiFiClientSecure c; c.setCACert(ROOT_CA); HTTPClient h;
     if (h.begin(c, g_url)) { h.setTimeout(15000); h.setReuse(false);
-      h.addHeader("Content-Type","application/json"); rc = h.POST(g_payload); h.end(); }
+      h.addHeader("Content-Type", "application/json"); rc = h.POST(g_payload); h.end(); }
   } else {
     WiFiClient c; HTTPClient h;
     if (h.begin(c, g_url)) { h.setTimeout(15000); h.setReuse(false);
-      h.addHeader("Content-Type","application/json"); rc = h.POST(g_payload); h.end(); }
+      h.addHeader("Content-Type", "application/json"); rc = h.POST(g_payload); h.end(); }
   }
 
   if (rc == 200 || rc == 201) {
@@ -780,8 +615,7 @@ void taskQueueFlush() {
 }
 
 // ── OTA UPDATE ───────────────────────
-// Segue la catena di redirect (GitHub → CDN, max 3 hop) prima di passare l'URL
-// a HTTPUpdate che non gestisce autonomamente i redirect.
+// Segue la catena di redirect (GitHub → CDN, max 3 hop)
 static String resolveOtaUrl(const String& startUrl) {
   const char* hdrKeys[] = {"Location"};
   String url = startUrl;
@@ -817,19 +651,16 @@ static String resolveOtaUrl(const String& startUrl) {
 void doOTA(String url, String newVersion) {
   Serial.printf("OTA: aggiornamento v%s → v%s\n", FW_VERSION, newVersion.c_str());
 
-  tft.fillRect(0, HDR_H, 480, FTR_Y - HDR_H, C_BG);
-  uint16_t bodyTxt = g_themeLight ? C_BLACK : C_WHITE;
-  tft.setTextColor(C_CYAN, C_BG); tft.setTextSize(3);
-  tft.setCursor(50, HDR_H + 25);
-  tft.print("Aggiornamento FW");
-  tft.setTextColor(bodyTxt, C_BG); tft.setTextSize(2);
-  tft.setCursor(60, HDR_H + 90);
-  tft.print("v"); tft.print(FW_VERSION);
-  tft.print(" -> v"); tft.print(newVersion);
-  tft.setTextColor(C_YELLOW, C_BG); tft.setTextSize(1);
-  tft.setCursor(70, HDR_H + 140);
-  tft.print("Non spegnere il dispositivo...");
-  drawHeader(); drawFooter();
+  tft.fillScreen(C_BG);
+  tft.drawBitmap(LOGO_X, LOGO_Y, image_IMG_9600_bits, LOGO_W, LOGO_H, C_ACCENT);
+  tft.setTextColor(C_ACCENT, C_BG); tft.setTextSize(2);
+  tft.drawString("Aggiornamento FW", HDR_TXT_X, HDR_TXT_Y);
+  tft.setTextColor(C_TEXT, C_BG); tft.setTextSize(3);
+  char verStr[32];
+  snprintf(verStr, sizeof(verStr), "v%s -> v%s", FW_VERSION, newVersion.c_str());
+  tft.drawString(verStr, 40, 150);
+  tft.setTextColor(C_YELLOW, C_BG); tft.setTextSize(2);
+  tft.drawString("Non spegnere...", 80, 220);
 
   String finalUrl = resolveOtaUrl(url);
   httpUpdate.rebootOnUpdate(true);
@@ -842,13 +673,11 @@ void doOTA(String url, String newVersion) {
     ret = httpUpdate.update(client, finalUrl);
   }
 
-  // Arriva qui solo se OTA non è andata a buon fine (altrimenti si riavvia)
+  // Arriva qui solo se OTA fallita (altrimenti si riavvia)
   Serial.printf("OTA FALLITO (%d): %s\n", httpUpdate.getLastError(),
     httpUpdate.getLastErrorString().c_str());
-  tft.fillRect(0, HDR_H + 155, 480, 50, C_BG);
   tft.setTextColor(C_RED, C_BG); tft.setTextSize(2);
-  tft.setCursor(80, HDR_H + 165);
-  tft.print("Errore aggiornamento");
+  tft.drawString("Errore aggiornamento", 60, 270);
   delay(4000);
   showIdle();
 }
@@ -907,7 +736,6 @@ void sendHeartbeat() {
     }
   }
 
-  // Riprova dopo 10s invece di 60s se il PING è fallito
   if (pingCode <= 0) {
     unsigned long _now = millis();
     g_lastHeartbeat = (_now >= HEARTBEAT_MS - 10000UL)
@@ -946,19 +774,15 @@ void taskRfid() {
                  (strcmp(g_uid, ADMIN_UID_2) == 0);
   if (isAdmin) {
     if (g_adminMode) {
-      // 2a lettura → entra in provisioning (NON resetta)
       Serial.println("ADMIN → PROVISIONING");
       beepOk();
       g_adminMode = false;
-      tft.fillRect(0, HDR_H, 480, FTR_Y - HDR_H, C_BG);
-      uint16_t bodyTxt = g_themeLight ? C_BLACK : C_WHITE;
-      tft.setTextColor(C_CYAN, C_BG); tft.setTextSize(3);
-      tft.setCursor(100, 130); tft.print("Avvio portale...");
-      drawHeader(); drawFooter();
+      tft.fillScreen(C_BG);
+      tft.setTextColor(C_ACCENT, C_BG); tft.setTextSize(3);
+      tft.drawString("Avvio portale...", 100, 140);
       delay(1200);
       startProvisioning();
     } else {
-      // 1a lettura → mostra config
       Serial.println("ADMIN MODE attivato");
       beepOk();
       g_adminMode  = true;
@@ -975,11 +799,9 @@ void taskRfid() {
   }
 
   if (g_waitingNtp) {
-    tft.fillRect(0, HDR_H + 180, 480, 40, C_BG);
+    tft.fillRect(0, FTR_TXT_Y, 480, 30, C_BG);
     tft.setTextColor(C_RED, C_BG); tft.setTextSize(2);
-    int16_t tw = 18 * 14;
-    tft.setCursor((480 - tw) / 2, HDR_H + 190);
-    tft.print("Orario non pronto");
+    tft.drawString("Orario non pronto", 80, FTR_TXT_Y);
     delay(1500); showWaitingNtp();
     return;
   }
@@ -1024,10 +846,9 @@ void taskWifi() {
       g_wifiOffline = false;
       Serial.println("WIFI RESTORED");
       rfidInit();
-      // NTP prima delle connessioni TLS (stessa ragione del boot)
       if (syncNTP()) { g_ntpSynced = true; }
       else { showWaitingNtp(); }
-      g_lastHeartbeat = millis() - HEARTBEAT_MS; // forza PING immediato per scaldare Railway
+      g_lastHeartbeat = millis() - HEARTBEAT_MS;
       sendHeartbeat();
       startQueueFlush();
       if (g_ntpSynced) showIdle();
@@ -1038,7 +859,8 @@ void taskWifi() {
     g_wifiOffline   = true;
     g_lastReconnect = millis();
     Serial.println("WIFI OFFLINE");
-    if (!g_ntpSynced) showWaitingNtp(); else drawHeader();
+    if (!g_ntpSynced) showWaitingNtp();
+    else if (ds.status == "ATTESA") drawWifiBars(WIFI_X, WIFI_Y, 0);
   }
   if (millis() - g_lastReconnect > RECONNECT_MS) {
     g_lastReconnect = millis();
@@ -1050,90 +872,43 @@ void taskWifi() {
 }
 
 // ── PROVISIONING ─────────────────────
-//
-// Schermata TFT: mostra SSID AP + anteprima temi
-// Portale WiFiManager: Backend, Reader, Company, Tema
-//
-// RESET: se nel campo Backend si scrive "RESET"
-//        cancella tutta la config e riavvia pulito.
-//
 void startProvisioning() {
-  // ── Schermata TFT ──
   tft.fillScreen(C_BG);
-  uint16_t bodyTxt = g_themeLight ? C_BLACK : C_WHITE;
 
-  tft.setTextColor(bodyTxt, C_BG); tft.setTextSize(2);
-  tft.setCursor(20, 18); tft.print("Configurazione WiFi");
-
-  tft.setTextColor(C_GRAY, C_BG); tft.setTextSize(1);
-  tft.setCursor(20, 46); tft.print("Connetti al WiFi:");
+  tft.drawBitmap(LOGO_X, LOGO_Y, image_IMG_9600_bits, LOGO_W, LOGO_H, C_ACCENT);
+  tft.setTextColor(C_TEXT, C_BG); tft.setTextSize(2);
+  tft.drawString("Configurazione WiFi", HDR_TXT_X, HDR_TXT_Y);
 
   char apName[32];
   snprintf(apName, sizeof(apName), "timbry-%06X", (uint32_t)(ESP.getEfuseMac() & 0xFFFFFF));
-  tft.setTextColor(C_TIMBRY, C_BG); tft.setTextSize(3);
-  tft.setCursor(20, 62); tft.print(apName);
 
-  tft.setTextColor(C_GRAY, C_BG); tft.setTextSize(1);
-  tft.setCursor(20, 102); tft.print("Poi vai su: 192.168.4.1");
-  tft.setCursor(20, 116);
-  tft.print("Per RESET: scrivi RESET nel campo Backend");
+  tft.setTextColor(C_DIM, C_BG); tft.setTextSize(1);
+  tft.drawString("Connetti al WiFi:", 14, 80);
+  tft.setTextColor(C_ACCENT, C_BG); tft.setTextSize(3);
+  tft.drawString(apName, 14, 100);
+  tft.setTextColor(C_DIM, C_BG); tft.setTextSize(1);
+  tft.drawString("Poi vai su: 192.168.4.1", 14, 148);
+  tft.drawString("Scrivi RESET nel campo Backend per cancellare tutto", 14, 164);
+  tft.drawString("Tema attuale:", 14, 190);
+  tft.setTextColor(C_TEXT, C_BG);
+  tft.drawString(cfg.theme == 0 ? "0 = Scuro" : "1 = Chiaro", 14 + 14*6, 190);
 
-  // Anteprima temi: 2 colonne × 5 righe (9 temi)
-  tft.setTextColor(bodyTxt, C_BG); tft.setTextSize(1);
-  tft.setCursor(20, 135); tft.print("Temi (campo Tema nel portale):");
-
-  int cols = 2;
-  int startY = 148;
-  int rowH   = 18;
-  int col0x  = 20;
-  int col1x  = 250;
-
-  for (int i = 0; i < THEME_COUNT; i++) {
-    int col  = i % cols;
-    int row  = i / cols;
-    int bx   = (col == 0) ? col0x : col1x;
-    int by2  = startY + row * rowH;
-
-    // Campione sfondo + header
-    tft.fillRect(bx,    by2, 14, 10, THEMES[i].bg);
-    tft.drawRect(bx,    by2, 14, 10, C_GRAY);
-    tft.fillRect(bx+16, by2, 14, 10, THEMES[i].header);
-    tft.drawRect(bx+16, by2, 14, 10, C_GRAY);
-
-    // Numero + nome
-    tft.setTextColor(bodyTxt, C_BG);
-    tft.setCursor(bx + 34, by2 + 2);
-    tft.print(i); tft.print("="); tft.print(THEMES[i].name);
-
-    // Marcatore tema attuale
-    if (i == cfg.theme) {
-      tft.setTextColor(C_TIMBRY, C_BG);
-      tft.print(" <");
-    }
-  }
-
-  // ── Portale WiFiManager ──
   WiFiManager wm;
   wm.setConfigPortalTimeout(300);
 
-  WiFiManagerParameter p_b("backend", "Backend URL",     cfg.backend,   127);
-  WiFiManagerParameter p_r("reader",  "Reader ID",       cfg.readerId,   63);
-  WiFiManagerParameter p_c("company", "Company ID",      cfg.companyId,  63);
-  WiFiManagerParameter p_s("sede",    "Sede / Ubicazione", cfg.sede,     63);
-  char themeStr[4];
+  WiFiManagerParameter p_b("backend", "Backend URL",         cfg.backend,   127);
+  WiFiManagerParameter p_r("reader",  "Reader ID",           cfg.readerId,   63);
+  WiFiManagerParameter p_c("company", "Company ID",          cfg.companyId,  63);
+  WiFiManagerParameter p_s("sede",    "Sede / Ubicazione",   cfg.sede,       63);
+  char themeStr[3];
   snprintf(themeStr, sizeof(themeStr), "%d", cfg.theme);
-  WiFiManagerParameter p_t("theme",
-    "Tema: 0=Nero 1=Blu 2=Verde 3=Viola 4=Bianco 5=Grigio 6=Bordeaux 7=Arancio 8=Teal",
-    themeStr, 2);
-
+  WiFiManagerParameter p_t("theme", "Tema: 0=Scuro  1=Chiaro", themeStr, 2);
   char debounceStr[8];
   snprintf(debounceStr, sizeof(debounceStr), "%lu", (unsigned long)cfg.debounce);
   WiFiManagerParameter p_d("debounce", "Debounce tag (ms, 500-30000)", debounceStr, 6);
-
-  // Bottone reset: compila il campo backend con "RESET" e invia il form
   WiFiManagerParameter p_reset(
     "<br><hr style='margin:16px 0'>"
-    "<p style='color:#c00;font-weight:bold;margin-bottom:6px'>Reset completo (cancella config e code offline):</p>"
+    "<p style='color:#c00;font-weight:bold;margin-bottom:6px'>Reset completo (cancella config e coda offline):</p>"
     "<input type='button' value='RESET TUTTO' "
     "onclick=\"if(confirm('Confermi reset completo?')){document.getElementById('backend').value='RESET';document.querySelector('form').submit();}\" "
     "style='background:#c00;color:#fff;padding:10px 24px;border:none;border-radius:4px;"
@@ -1150,15 +925,13 @@ void startProvisioning() {
 
   if (!wm.startConfigPortal(apName)) { ESP.restart(); return; }
 
-  // ── Leggi valori ──
   const char* newBackend = p_b.getValue();
 
-  // Controlla RESET
   if (strcasecmp(newBackend, "RESET") == 0) {
     Serial.println("RESET richiesto dal portale");
     tft.fillScreen(C_BG);
     tft.setTextColor(C_RED, C_BG); tft.setTextSize(4);
-    tft.setCursor(140, 130); tft.print("RESET...");
+    tft.drawString("RESET...", 140, 140);
     WiFi.disconnect(true);
     clearConfig();
     delay(1500);
@@ -1170,9 +943,7 @@ void startProvisioning() {
   strlcpy(cfg.readerId,  p_r.getValue(),     sizeof(cfg.readerId));
   strlcpy(cfg.companyId, p_c.getValue(),     sizeof(cfg.companyId));
   strlcpy(cfg.sede,      p_s.getValue(),     sizeof(cfg.sede));
-
-  int themeVal = atoi(p_t.getValue());
-  cfg.theme = (themeVal >= 0 && themeVal < THEME_COUNT) ? (uint8_t)themeVal : 0;
+  cfg.theme = (atoi(p_t.getValue()) == 1) ? 1 : 0;
 
   unsigned long debounceVal = strtoul(p_d.getValue(), nullptr, 10);
   cfg.debounce = (debounceVal >= 500 && debounceVal <= 30000)
@@ -1180,7 +951,6 @@ void startProvisioning() {
                  : (uint32_t)DEBOUNCE_DEFAULT;
   g_debouncMs = cfg.debounce;
 
-  // Rimuovi trailing slash
   int len = strlen(cfg.backend);
   if (len > 0 && cfg.backend[len-1] == '/') cfg.backend[len-1] = '\0';
 
@@ -1203,12 +973,12 @@ void taskSerial() {
     Serial.printf("Backend:  %s\n", cfg.backend);
     Serial.printf("Reader:   %s\n", cfg.readerId);
     Serial.printf("Company:  %s\n", cfg.companyId);
-    Serial.printf("Tema:     %d (%s)\n", cfg.theme,
-      cfg.theme < THEME_COUNT ? THEMES[cfg.theme].name : "?");
+    Serial.printf("Tema:     %d (%s)\n", cfg.theme, cfg.theme == 0 ? "Scuro" : "Chiaro");
     Serial.printf("Queue:    %d\n", g_queueSize);
-    Serial.printf("WiFi:     %s\n", WiFi.status()==WL_CONNECTED?"OK":"OFFLINE");
+    Serial.printf("WiFi:     %s\n", WiFi.status()==WL_CONNECTED ? "OK" : "OFFLINE");
     Serial.printf("IP:       %s\n", WiFi.localIP().toString().c_str());
-    Serial.printf("NTP:      %s\n", g_ntpSynced?"OK":"NO SYNC");
+    Serial.printf("RSSI:     %d dBm (%d barre)\n", WiFi.RSSI(), rssiToBars());
+    Serial.printf("NTP:      %s\n", g_ntpSynced ? "OK" : "NO SYNC");
     Serial.printf("Time:     %s\n", getISOTimestamp().c_str());
     Serial.printf("Sede:     %s\n", cfg.sede);
     Serial.printf("DEBOUNCE: %lu ms\n", g_debouncMs);
@@ -1236,14 +1006,14 @@ void taskSerial() {
     } else Serial.println("Valore non valido (500-10000)");
   } else if (cmdU.startsWith("THEME ")) {
     int t = cmdU.substring(6).toInt();
-    if (t >= 0 && t < THEME_COUNT) {
+    if (t == 0 || t == 1) {
       cfg.theme = (uint8_t)t;
       applyTheme(cfg.theme);
       saveConfig();
-      Serial.printf("THEME → %d (%s)\n", cfg.theme, THEMES[cfg.theme].name);
+      Serial.printf("THEME → %d (%s)\n", cfg.theme, cfg.theme == 0 ? "Scuro" : "Chiaro");
       if (g_waitingNtp) showWaitingNtp(); else showIdle();
     } else {
-      Serial.printf("Tema non valido (0-%d)\n", THEME_COUNT - 1);
+      Serial.println("Tema non valido (0=Scuro, 1=Chiaro)");
     }
   }
 }
@@ -1261,12 +1031,9 @@ void setup() {
 
   tft.init();
   tft.setRotation(1);
-  g_clockSprite.createSprite(CLK_SPR_W, CLK_SPR_H);
-  g_dateSprite.createSprite(DATE_SPR_W, DATE_SPR_H);
   g_displayOk = (tft.width() == 480 && tft.height() == 320);
   if (!g_displayOk) Serial.println("WARN: display dimensioni inattese");
 
-  // Carica config (e tema) prima della splash
   bool hasConfig = loadConfig();
   if (!hasConfig) {
     cfg.theme = 0;
@@ -1277,9 +1044,14 @@ void setup() {
     cfg.valid = false;
   }
 
+  // Splash
   tft.fillScreen(C_BG);
-  drawSplashLogo();
-  delay(2500);
+  tft.drawBitmap(LOGO_X, LOGO_Y, image_IMG_9600_bits, LOGO_W, LOGO_H, C_ACCENT);
+  tft.setTextColor(C_TEXT, C_BG); tft.setTextSize(3);
+  tft.drawString("TIMBRY", HDR_TXT_X, HDR_TXT_Y);
+  tft.setTextColor(C_DIM, C_BG); tft.setTextSize(1);
+  tft.drawString("v" FW_VERSION, HDR_TXT_X, 50);
+  delay(2000);
 
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
@@ -1295,24 +1067,20 @@ void setup() {
 
   Serial.printf("Backend: %s\nReader:  %s\nCompany: %s\nTema:    %d (%s)\nQueue:   %d\n",
     cfg.backend, cfg.readerId, cfg.companyId,
-    cfg.theme, THEMES[cfg.theme].name, g_queueSize);
+    cfg.theme, cfg.theme == 0 ? "Scuro" : "Chiaro", g_queueSize);
 
   tft.fillScreen(C_BG);
-  uint16_t bodyTxt = g_themeLight ? C_BLACK : C_WHITE;
-  tft.setTextColor(bodyTxt, C_BG); tft.setTextSize(2);
-  tft.setCursor(20, 100); tft.print("Connessione WiFi...");
+  tft.setTextColor(C_TEXT, C_BG); tft.setTextSize(2);
+  tft.drawString("Connessione WiFi...", 20, 140);
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
   WiFi.persistent(true);
-  // Imposta country code IT: abilita canali 1-13 (router italiani usano
-  // spesso ch 12-13 in "auto" che l'ESP32 con country USA non vede)
+  // Abilita canali 1-13 (router italiani usano spesso ch 12-13)
   wifi_country_t country = {"IT", 1, 13, 20, WIFI_COUNTRY_POLICY_MANUAL};
   esp_wifi_set_country(&country);
-  // Usa SSID+PSK espliciti invece di WiFi.begin() per evitare il BSSID
-  // lock salvato da WiFiManager (causa problemi con mesh e router che
-  // cambiano canale)
+  // Usa SSID+PSK espliciti per evitare il BSSID lock di WiFiManager
   { String ssid = WiFi.SSID(), psk = WiFi.psk();
     Serial.printf("WiFi SSID: '%s'\n", ssid.c_str());
     if (ssid.length() > 0) WiFi.begin(ssid.c_str(), psk.c_str());
@@ -1322,16 +1090,14 @@ void setup() {
     delay(500); Serial.print(".");
   }
   Serial.printf("\nWiFi status: %d\n", WiFi.status());
-  // status: 3=OK 1=SSID non trovato 4=password sbagliata 6=disconnesso
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("WIFI OK - IP: %s\n", WiFi.localIP().toString().c_str());
     rfidInit(); beepOk();
-    // NTP prima di qualsiasi connessione TLS: senza ora valida la verifica
-    // del certificato Let's Encrypt fallisce (cert notBefore > epoch 1970)
+    // NTP prima di TLS: senza ora valida la verifica cert fallisce
     if (syncNTP()) { g_ntpSynced = true; }
     else showWaitingNtp();
-    g_lastHeartbeat = millis() - HEARTBEAT_MS; // forza PING immediato per scaldare Railway
+    g_lastHeartbeat = millis() - HEARTBEAT_MS;
     sendHeartbeat();
     startQueueFlush();
     if (g_ntpSynced) showIdle();
