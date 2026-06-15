@@ -339,8 +339,9 @@ void doOTA(const String& url, const String& newVersion) {
 
   t_httpUpdate_return ret;
   if (finalUrl.startsWith("https")) {
-    Serial.println("OTA via HTTPS (con certificato)...");
-    WiFiClientSecure c; c.setCACert(ROOT_CA);
+    Serial.println("OTA via HTTPS (certificato disabilitato per test)...");
+    WiFiClientSecure c;
+    c.setInsecure(); // TODO: Aggiornare ROOT_CA con certificato corretto per GitHub
     ret = httpUpdate.update(c, finalUrl);
   } else {
     Serial.println("OTA via HTTP...");
