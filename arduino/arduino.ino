@@ -281,19 +281,21 @@ void rfidInit() {
 // ── DISPLAY ──────────────────────────
 
 void drawClock() {
+  // fillRect obbligatorio per pulire il vecchio testo prima di ridisegnare
+  tft.fillRect(0, 110, 480, 130, C_BG);
   tft.setTextColor(C_TEXT, C_BG);
   tft.setTextSize(14);
 
   if (ds.oraCorrente.length() >= 5) {
-    String hrs = ds.oraCorrente.substring(0, 2);
+    String hrs  = ds.oraCorrente.substring(0, 2);
     String mins = ds.oraCorrente.substring(3, 5);
-    tft.drawString(hrs, 39, 125);
-    tft.drawString(":", 207, 126);
-    tft.drawString(mins, 305, 126);
+    tft.setCursor(140, 125); tft.print(hrs);
+    tft.setCursor(228, 126); tft.print(":");
+    tft.setCursor(300, 126); tft.print(mins);
   } else {
-    tft.drawString("--", 39, 125);
-    tft.drawString(":", 207, 126);
-    tft.drawString("--", 305, 126);
+    tft.setCursor(140, 125); tft.print("--");
+    tft.setCursor(228, 126); tft.print(":");
+    tft.setCursor(300, 126); tft.print("--");
   }
 }
 
