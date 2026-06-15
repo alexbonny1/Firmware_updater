@@ -200,17 +200,10 @@ int rssiToBars() {
   return 1;
 }
 
-// Disegna 4 barre WiFi in stile Lopaka (30×32px, bottom-aligned)
-void drawWifiBars(int x, int y, int bars) {
-  tft.fillRect(x, y, 30, 32, C_BG);
-  const int bw = 5, gap = 2;
-  const int heights[4] = {8, 16, 24, 32};
-  uint16_t activeColor = (bars == 0) ? (uint16_t)C_RED : (uint16_t)C_WIFI;
-  for (int i = 0; i < 4; i++) {
-    int bh = heights[i];
-    tft.fillRect(x + i * (bw + gap), y + (32 - bh), bw, bh,
-                 (i < bars) ? activeColor : C_DIM);
-  }
+// Disegna bitmap WiFi colorato in base al livello
+void drawWifiBars(int bars) {
+  uint16_t color = (bars == 0) ? (uint16_t)C_RED : (uint16_t)C_WIFI;
+  tft.drawBitmap(WIFI_X, WIFI_Y, image_network_4_bars_bits, 30, 32, color);
 }
 
 // ── UTILITÀ TEMPO ────────────────────
@@ -284,7 +277,18 @@ void drawClock() {
   tft.fillRect(CLK_X, CLK_Y, CLK_W, CLK_H, C_BG);
   tft.setTextColor(C_TEXT, C_BG);
   tft.setTextSize(CLK_SIZE);
-  tft.drawString(ds.oraCorrente.length() > 0 ? ds.oraCorrente : "--:--", CLK_X, CLK_Y);
+
+  if (ds.oraCorrente.length() >= 5) {
+    String hrs = ds.oraCorrente.substring(0, 2);
+    String mins = ds.oraCorrente.substring(3, 5);
+    tft.drawString(hrs, 39, CLK_Y);
+    tft.drawString(":", 207, CLK_Y);
+    tft.drawString(mins, 305, CLK_Y);
+  } else {
+    tft.drawString("--", 39, CLK_Y);
+    tft.drawString(":", 207, CLK_Y);
+    tft.drawString("--", 305, CLK_Y);
+  }
 }
 
 void showIdle() {
@@ -301,7 +305,7 @@ void showIdle() {
   tft.drawString(cfg.readerId[0] ? cfg.readerId : "Reader", HDR_TXT_X, HDR_TXT_Y);
   tft.drawString(getLocalDate(), DATE_TXT_X, DATE_TXT_Y);
 
-  drawWifiBars(WIFI_X, WIFI_Y, rssiToBars());
+  drawWifiBars(rssiToBars());
 
   tft.setTextColor(C_DIM, C_BG);
   tft.setTextSize(3);
@@ -389,7 +393,7 @@ void showWaitingNtp() {
   tft.setTextColor(C_TEXT, C_BG); tft.setTextSize(2);
   tft.drawString(cfg.readerId[0] ? cfg.readerId : "Reader", HDR_TXT_X, HDR_TXT_Y);
   tft.drawString(getLocalDate(), DATE_TXT_X, DATE_TXT_Y);
-  drawWifiBars(WIFI_X, WIFI_Y, rssiToBars());
+  drawWifiBars(rssiToBars());
 
   tft.setTextColor(C_DIM, C_BG); tft.setTextSize(CLK_SIZE);
   tft.drawString("--:--", CLK_X, CLK_Y);
@@ -407,7 +411,7 @@ void taskNtpRetry() {
   g_lastNtpRetry = millis();
   Serial.println("NTP retry...");
   if (syncNTP()) { g_ntpSynced = true; g_waitingNtp = false; showIdle(); }
-  else { drawWifiBars(WIFI_X, WIFI_Y, rssiToBars()); }
+  else { drawWifiBars(rssiToBars()); }
 }
 
 void updateClock() {
@@ -426,7 +430,7 @@ void updateClock() {
   int bars = rssiToBars();
   if (bars != lastBars && ds.status == "ATTESA") {
     lastBars = bars;
-    drawWifiBars(WIFI_X, WIFI_Y, bars);
+    drawWifiBars(bars);
   }
 
   // Aggiorna orologio solo quando i minuti cambiano
