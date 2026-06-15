@@ -200,10 +200,17 @@ int rssiToBars() {
   return 1;
 }
 
-// Disegna bitmap WiFi colorato in base al livello
+// Barre WiFi dinamiche: più segnale = più barre attive (30×32px, bottom-aligned)
 void drawWifiBars(int bars) {
-  uint16_t color = (bars == 0) ? (uint16_t)C_RED : (uint16_t)C_WIFI;
-  tft.drawBitmap(WIFI_X, WIFI_Y, image_network_4_bars_bits, 30, 32, color);
+  tft.fillRect(WIFI_X, WIFI_Y, 30, 32, C_BG);
+  const int bw = 5, gap = 2;
+  const int heights[4] = {8, 16, 24, 32};
+  uint16_t activeColor = (bars == 0) ? (uint16_t)C_RED : (uint16_t)C_WIFI;
+  for (int i = 0; i < 4; i++) {
+    int bh = heights[i];
+    tft.fillRect(WIFI_X + i * (bw + gap), WIFI_Y + (32 - bh), bw, bh,
+                 (i < bars) ? activeColor : C_DIM);
+  }
 }
 
 // ── UTILITÀ TEMPO ────────────────────
@@ -864,7 +871,7 @@ void taskWifi() {
     g_lastReconnect = millis();
     Serial.println("WIFI OFFLINE");
     if (!g_ntpSynced) showWaitingNtp();
-    else if (ds.status == "ATTESA") drawWifiBars(WIFI_X, WIFI_Y, 0);
+    else if (ds.status == "ATTESA") drawWifiBars(0);
   }
   if (millis() - g_lastReconnect > RECONNECT_MS) {
     g_lastReconnect = millis();
