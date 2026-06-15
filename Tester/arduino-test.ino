@@ -46,10 +46,12 @@
 #define TFT_BL_PIN      32
 
 // ── CONFIG ───────────────────────────
-#define FW_VERSION     "test-1.1"
-#define PREF_NAMESPACE "timrbry"
-#define HEARTBEAT_MS   30000UL
-#define RFID_TIMEOUT_MS 15000UL  // 15 secondi di attesa RFID prima di aprire portale
+#define FW_VERSION       "test-1.1"
+#define PREF_NAMESPACE   "timrbry"
+#define HEARTBEAT_MS     5000UL   // 5 secondi per test frequente OTA check
+#define RFID_TIMEOUT_MS  15000UL  // 15 secondi di attesa RFID prima di aprire portale
+#define DEBOUNCE_DEFAULT 5000UL
+#define DISPLAY_MS_DEFAULT 3000UL
 
 // ── TAG ADMIN ────────────────────────
 #define ADMIN_UID        "3605CA06"
@@ -77,10 +79,13 @@ Preferences prefs;
 
 // ── STRUTTURA CONFIG ────────────────
 struct Config {
-  char backend[128];
-  char readerId[64];
-  char companyId[64];
-  char sede[64];
+  char     backend[128];
+  char     readerId[64];
+  char     companyId[64];
+  char     sede[64];
+  uint8_t  theme;      // 0=scuro, 1=chiaro
+  uint32_t debounce;   // ms (500-30000)
+  uint32_t displayMs;  // ms (500-10000)
 };
 Config cfg;
 
@@ -143,10 +148,13 @@ static uint16_t contrastColor(uint16_t bg) {
 
 bool loadConfig() {
   prefs.begin(PREF_NAMESPACE, true);
-  String backend   = prefs.getString("backend",   "");
-  String readerId  = prefs.getString("readerId",  "");
-  String companyId = prefs.getString("companyId", "");
-  String sede      = prefs.getString("sede",      "");
+  String backend    = prefs.getString("backend",   "");
+  String readerId   = prefs.getString("readerId",  "");
+  String companyId  = prefs.getString("companyId", "");
+  String sede       = prefs.getString("sede",      "");
+  uint8_t  rawTheme = (uint8_t)prefs.getUInt("theme",     0);
+  uint32_t debounce = prefs.getUInt("debounce",  (uint32_t)DEBOUNCE_DEFAULT);
+  uint32_t displayMs = prefs.getUInt("displayMs", DISPLAY_MS_DEFAULT);
   prefs.end();
 
   if (backend.length() < 4 || readerId.length() < 2 || companyId.length() < 10) return false;
@@ -155,6 +163,9 @@ bool loadConfig() {
   strlcpy(cfg.readerId,  readerId.c_str(),  sizeof(cfg.readerId));
   strlcpy(cfg.companyId, companyId.c_str(), sizeof(cfg.companyId));
   strlcpy(cfg.sede,      sede.c_str(),      sizeof(cfg.sede));
+  cfg.theme     = (rawTheme == 0 || rawTheme == 1) ? (uint8_t)rawTheme : 0;
+  cfg.debounce  = (debounce >= 500 && debounce <= 30000) ? debounce : (uint32_t)DEBOUNCE_DEFAULT;
+  cfg.displayMs = (displayMs >= 500 && displayMs <= 10000) ? displayMs : DISPLAY_MS_DEFAULT;
   g_configValid = true;
   return true;
 }
@@ -165,6 +176,9 @@ void saveConfig() {
   prefs.putString("readerId",  cfg.readerId);
   prefs.putString("companyId", cfg.companyId);
   prefs.putString("sede",      cfg.sede);
+  prefs.putUInt("theme",       cfg.theme);
+  prefs.putUInt("debounce",    cfg.debounce);
+  prefs.putUInt("displayMs",   cfg.displayMs);
   prefs.end();
 }
 
@@ -577,10 +591,20 @@ void startProvisioning() {
   WiFiManagerParameter p_c("company", "Company ID",          cfg.companyId,  63);
   WiFiManagerParameter p_s("sede",    "Sede / Ubicazione",   cfg.sede,       63);
 
+  char themeStr[3];
+  snprintf(themeStr, sizeof(themeStr), "%d", cfg.theme);
+  WiFiManagerParameter p_t("theme", "Tema: 0=Scuro  1=Chiaro", themeStr, 2);
+
+  char debounceStr[8];
+  snprintf(debounceStr, sizeof(debounceStr), "%lu", (unsigned long)cfg.debounce);
+  WiFiManagerParameter p_d("debounce", "Debounce tag (ms, 500-30000)", debounceStr, 6);
+
   wm.addParameter(&p_b);
   wm.addParameter(&p_r);
   wm.addParameter(&p_c);
   wm.addParameter(&p_s);
+  wm.addParameter(&p_t);
+  wm.addParameter(&p_d);
 
   if (!wm.startConfigPortal(apName)) {
     Serial.println("PROVISIONING TIMEOUT → riavvio");
@@ -614,6 +638,13 @@ void startProvisioning() {
   strlcpy(cfg.readerId,  p_r.getValue(),     sizeof(cfg.readerId));
   strlcpy(cfg.companyId, p_c.getValue(),     sizeof(cfg.companyId));
   strlcpy(cfg.sede,      p_s.getValue(),     sizeof(cfg.sede));
+
+  cfg.theme = (atoi(p_t.getValue()) == 1) ? 1 : 0;
+
+  unsigned long debounceVal = strtoul(p_d.getValue(), nullptr, 10);
+  cfg.debounce = (debounceVal >= 500 && debounceVal <= 30000)
+                 ? (uint32_t)debounceVal
+                 : (uint32_t)DEBOUNCE_DEFAULT;
 
   int len = strlen(cfg.backend);
   if (len > 0 && cfg.backend[len-1] == '/') cfg.backend[len-1] = '\0';
