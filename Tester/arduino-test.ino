@@ -6,9 +6,12 @@
  *   1. TEST DISPLAY  → cicla tutti i colori (1s ciascuno)
  *   2. TEST BUZZER   → scala di frequenze dal grave all'acuto
  *   3. TEST RFID     → aspetta tag, lo legge, visualizza UID e bip
- *                      poi torna ad aspettare (loop continuo)
+ *   4. TEST WiFi     → connette a WiFi, test di connettività
+ *   5. PROVISIONING  → apre portale di configurazione (WiFiManager)
+ *   6. POST-CONFIG   → attesa (OTA check ogni 30s)
+ *                      Tag admin riapre portale
  *
- * OTA: stessa logica del firmware principale — heartbeat ogni 60s
+ * OTA: stessa logica del firmware principale — heartbeat ogni 30s
  *      verso il backend salvato in NVS; aggiorna se la versione
  *      restituita differisce da FW_VERSION.
  *
@@ -16,6 +19,8 @@
  *   TFT ILI9488:  MOSI→23 / SCK→18 / CS→15 / DC→2 / RST→4 / BL→32
  *   RC522:        MOSI→23 / MISO→19 / SCK→18 / SS→21 / RST→22
  *   BUZZER:       GPIO 33
+ *
+ * TAG ADMIN: 3605CA06 / F917C906 (da firmware principale)
  */
 
 #include <Arduino.h>
@@ -41,9 +46,14 @@
 #define TFT_BL_PIN      32
 
 // ── CONFIG ───────────────────────────
-#define FW_VERSION     "test-1.0"
+#define FW_VERSION     "test-1.1"
 #define PREF_NAMESPACE "timrbry"
 #define HEARTBEAT_MS   30000UL
+#define RFID_TIMEOUT_MS 600000UL  // 10 minuti di attesa RFID prima di aprire portale
+
+// ── TAG ADMIN ────────────────────────
+#define ADMIN_UID        "3605CA06"
+#define ADMIN_UID_2      "F917C906"
 
 // ── COSTANTI COLORI ──────────────────
 #define C_BLACK   0x0000
@@ -65,15 +75,23 @@ MFRC522  rfid(PIN_RC522_SS, PIN_RC522_RST);
 TFT_eSPI tft = TFT_eSPI();
 Preferences prefs;
 
+// ── STRUTTURA CONFIG ────────────────
+struct Config {
+  char backend[128];
+  char readerId[64];
+  char companyId[64];
+  char sede[64];
+};
+Config cfg;
+
 // ── STATO GLOBALE ────────────────────
 char          g_uid[64];
 unsigned long g_lastHeartbeat  = 0;
 unsigned long g_lastOtaTick    = 0;
-String        g_backendUrl     = "";
-String        g_readerId       = "";
-String        g_companyId      = "";
-String        g_sede           = "";
+unsigned long g_rfidPhaseStart  = 0;
 bool          g_rfidOk         = false;
+bool          g_configValid    = false;
+bool          g_wifiConnected  = false;
 
 // ── TEST COLORI ──────────────────────
 struct ColorEntry { uint16_t color; const char* name; };
@@ -104,7 +122,7 @@ static const int BUZZER_FREQS[] = {
 #define BUZZER_STEP_MS    650
 
 // ── FASI ─────────────────────────────
-enum Phase { PHASE_COLOR, PHASE_BUZZER, PHASE_RFID };
+enum Phase { PHASE_COLOR, PHASE_BUZZER, PHASE_RFID, PHASE_WIFI, PHASE_PROV, PHASE_WAIT };
 Phase         g_phase      = PHASE_COLOR;
 int           g_step       = 0;
 unsigned long g_stepTimer  = 0;
@@ -123,13 +141,38 @@ static uint16_t contrastColor(uint16_t bg) {
   return (lum > 12000) ? C_BLACK : C_WHITE;
 }
 
-void loadConfig() {
+bool loadConfig() {
   prefs.begin(PREF_NAMESPACE, true);
-  g_backendUrl = prefs.getString("backend",   "");
-  g_readerId   = prefs.getString("readerId",  "");
-  g_companyId  = prefs.getString("companyId", "");
-  g_sede       = prefs.getString("sede",      "");
+  String backend   = prefs.getString("backend",   "");
+  String readerId  = prefs.getString("readerId",  "");
+  String companyId = prefs.getString("companyId", "");
+  String sede      = prefs.getString("sede",      "");
   prefs.end();
+
+  if (backend.length() < 4 || readerId.length() < 2 || companyId.length() < 10) return false;
+
+  strlcpy(cfg.backend,   backend.c_str(),   sizeof(cfg.backend));
+  strlcpy(cfg.readerId,  readerId.c_str(),  sizeof(cfg.readerId));
+  strlcpy(cfg.companyId, companyId.c_str(), sizeof(cfg.companyId));
+  strlcpy(cfg.sede,      sede.c_str(),      sizeof(cfg.sede));
+  g_configValid = true;
+  return true;
+}
+
+void saveConfig() {
+  prefs.begin(PREF_NAMESPACE, false);
+  prefs.putString("backend",   cfg.backend);
+  prefs.putString("readerId",  cfg.readerId);
+  prefs.putString("companyId", cfg.companyId);
+  prefs.putString("sede",      cfg.sede);
+  prefs.end();
+}
+
+void clearConfig() {
+  prefs.begin(PREF_NAMESPACE, false);
+  prefs.clear();
+  prefs.end();
+  g_configValid = false;
 }
 
 // versionReg letto durante l'init — mostrato sul display per diagnosi
@@ -377,6 +420,8 @@ void runBuzzerTest() {
 // TEST: RFID READER
 // ─────────────────────────────────────
 void updateOtaFooter();  // forward declaration
+void startWiFiTest();    // forward declaration
+void startWaitPhase();   // forward declaration
 
 void startRfidTest() {
   tft.fillScreen(C_BLACK);
@@ -407,34 +452,55 @@ void startRfidTest() {
   tft.printf("RC522 v=0x%02X", g_rfidVersion);
 
   // Footer OTA (aggiornato ogni secondo da updateOtaFooter)
+  g_rfidPhaseStart = millis();
   g_lastOtaTick = millis();
   updateOtaFooter();
 }
 
 // Aggiorna la riga OTA in fondo allo schermo senza ridisegnare tutto
 void updateOtaFooter() {
-  unsigned long elapsed   = millis() - g_lastHeartbeat;
-  unsigned long secToNext = (elapsed >= HEARTBEAT_MS) ? 0UL : (HEARTBEAT_MS - elapsed) / 1000;
+  unsigned long elapsed   = millis() - g_rfidPhaseStart;
+  unsigned long secLeft   = (elapsed >= RFID_TIMEOUT_MS) ? 0UL : (RFID_TIMEOUT_MS - elapsed) / 1000;
+  unsigned long minLeft   = secLeft / 60;
+  unsigned long secLeft2  = secLeft % 60;
 
   tft.fillRect(0, 298, 480, 22, C_BLACK);
   tft.setTextSize(1);
 
-  if (g_backendUrl.length() == 0) {
-    tft.setTextColor(C_GRAY, C_BLACK);
-    tft.setCursor(50, 303);
-    tft.print("OTA: backend non configurato");
-  } else if (WiFi.status() != WL_CONNECTED) {
-    tft.setTextColor(C_GRAY, C_BLACK);
-    tft.setCursor(50, 303);
-    tft.print("OTA: WiFi non connesso");
-  } else {
+  if (g_configValid) {
     tft.setTextColor(C_CYAN, C_BLACK);
     tft.setCursor(50, 303);
-    tft.printf("OTA check in %lus  (v=%s)", secToNext, FW_VERSION);
+    tft.printf("Portale in %lum%02lus  (v=%s)", minLeft, secLeft2, FW_VERSION);
+  } else {
+    tft.setTextColor(C_YELLOW, C_BLACK);
+    tft.setCursor(50, 303);
+    tft.printf("Config richiesta in %lum%02lus", minLeft, secLeft2);
   }
 }
 
 void runRfidTest() {
+  // Controlla timeout (10 minuti di attesa → passa a WiFi test)
+  unsigned long elapsed = millis() - g_rfidPhaseStart;
+  if (elapsed >= RFID_TIMEOUT_MS) {
+    Serial.println("RFID TIMEOUT → passaggio a TEST WiFi");
+    tft.fillScreen(C_BLACK);
+    tft.setTextColor(C_YELLOW, C_BLACK); tft.setTextSize(2);
+    tft.setCursor(60, 140);
+    tft.print("Timeout RFID");
+    tft.setCursor(60, 170);
+    tft.print("Passaggio a WiFi...");
+    delay(1500);
+    g_phase = PHASE_WIFI;
+    startWiFiTest();
+    return;
+  }
+
+  // Aggiorna footer ogni secondo
+  if (millis() - g_lastOtaTick >= 1000) {
+    g_lastOtaTick = millis();
+    updateOtaFooter();
+  }
+
   if (!rfid.PICC_IsNewCardPresent()) return;
   if (!rfid.PICC_ReadCardSerial())   return;
 
@@ -471,8 +537,196 @@ void runRfidTest() {
 
   delay(3000);
 
-  // Torna ad aspettare
+  // Torna ad aspettare (resetta il timer)
+  g_rfidPhaseStart = millis();
   startRfidTest();
+}
+
+// ─────────────────────────────────────
+// PROVISIONING
+// ─────────────────────────────────────
+void startProvisioning() {
+  tft.fillScreen(C_BLACK);
+  tft.setTextColor(C_WHITE, C_BLACK); tft.setTextSize(2);
+  tft.setCursor(60, 60);
+  tft.print("Configurazione WiFi");
+
+  char apName[32];
+  snprintf(apName, sizeof(apName), "timbry-%06X", (uint32_t)(ESP.getEfuseMac() & 0xFFFFFF));
+
+  tft.setTextSize(1);
+  tft.setCursor(14, 100);
+  tft.print("Connetti al WiFi:");
+  tft.setTextColor(C_CYAN, C_BLACK); tft.setTextSize(2);
+  tft.setCursor(14, 125);
+  tft.print(apName);
+  tft.setTextColor(C_WHITE, C_BLACK); tft.setTextSize(1);
+  tft.setCursor(14, 155);
+  tft.print("Poi vai su: 192.168.4.1");
+  tft.setCursor(14, 175);
+  tft.print("Scrivi RESET nel Backend");
+  tft.setCursor(14, 195);
+  tft.print("per cancellare tutto");
+
+  Serial.println("=== PROVISIONING AVVIATO ===");
+
+  WiFiManager wm;
+  wm.setConfigPortalTimeout(300);
+
+  WiFiManagerParameter p_b("backend", "Backend URL",         cfg.backend,   127);
+  WiFiManagerParameter p_r("reader",  "Reader ID",           cfg.readerId,   63);
+  WiFiManagerParameter p_c("company", "Company ID",          cfg.companyId,  63);
+  WiFiManagerParameter p_s("sede",    "Sede / Ubicazione",   cfg.sede,       63);
+
+  wm.addParameter(&p_b);
+  wm.addParameter(&p_r);
+  wm.addParameter(&p_c);
+  wm.addParameter(&p_s);
+
+  if (!wm.startConfigPortal(apName)) {
+    Serial.println("PROVISIONING TIMEOUT → riavvio");
+    tft.fillScreen(C_BLACK);
+    tft.setTextColor(C_RED, C_BLACK); tft.setTextSize(2);
+    tft.setCursor(60, 140);
+    tft.print("Timeout portale");
+    tft.setCursor(60, 165);
+    tft.print("Riavvio...");
+    delay(2000);
+    ESP.restart();
+    return;
+  }
+
+  const char* newBackend = p_b.getValue();
+
+  if (strcasecmp(newBackend, "RESET") == 0) {
+    Serial.println("RESET richiesto dal portale");
+    tft.fillScreen(C_BLACK);
+    tft.setTextColor(C_RED, C_BLACK); tft.setTextSize(3);
+    tft.setCursor(140, 140);
+    tft.print("RESET...");
+    WiFi.disconnect(true);
+    clearConfig();
+    delay(1500);
+    ESP.restart();
+    return;
+  }
+
+  strlcpy(cfg.backend,   newBackend,         sizeof(cfg.backend));
+  strlcpy(cfg.readerId,  p_r.getValue(),     sizeof(cfg.readerId));
+  strlcpy(cfg.companyId, p_c.getValue(),     sizeof(cfg.companyId));
+  strlcpy(cfg.sede,      p_s.getValue(),     sizeof(cfg.sede));
+
+  int len = strlen(cfg.backend);
+  if (len > 0 && cfg.backend[len-1] == '/') cfg.backend[len-1] = '\0';
+
+  saveConfig();
+  g_configValid = true;
+
+  Serial.println("Configurazione salvata → passaggio a PHASE_WAIT");
+  tft.fillScreen(C_BLACK);
+  tft.setTextColor(C_GREEN, C_BLACK); tft.setTextSize(2);
+  tft.setCursor(60, 140);
+  tft.print("Configurazione salvata!");
+  delay(1500);
+
+  // Passa a PHASE_WAIT
+  g_phase = PHASE_WAIT;
+}
+
+// ─────────────────────────────────────
+// TEST WiFi
+// ─────────────────────────────────────
+void startWiFiTest() {
+  tft.fillScreen(C_BLACK);
+  tft.setTextColor(C_WHITE, C_BLACK); tft.setTextSize(2);
+  tft.setCursor(60, 100);
+  tft.print("Connessione WiFi...");
+
+  Serial.println("TEST WiFi: connessione in corso...");
+
+  WiFiManager wm;
+  wm.setConfigPortalTimeout(60);
+  wm.setSaveConfigCallback([]() {});
+
+  if (wm.autoConnect("timbry-test-fw")) {
+    g_wifiConnected = true;
+    tft.setTextColor(C_GREEN, C_BLACK); tft.setTextSize(2);
+    tft.setCursor(60, 145);
+    tft.print("WiFi OK!");
+    tft.setCursor(60, 175);
+    tft.print(WiFi.localIP().toString().c_str());
+    Serial.printf("TEST WiFi: OK - IP %s\n", WiFi.localIP().toString().c_str());
+    delay(2000);
+  } else {
+    g_wifiConnected = false;
+    tft.setTextColor(C_YELLOW, C_BLACK); tft.setTextSize(2);
+    tft.setCursor(60, 145);
+    tft.print("WiFi assente");
+    tft.setCursor(60, 175);
+    tft.print("OTA disabilitato");
+    Serial.println("TEST WiFi: fallito");
+    delay(2000);
+  }
+
+  // Passa a PHASE_PROV
+  g_phase = PHASE_PROV;
+}
+
+// ─────────────────────────────────────
+// PHASE WAIT (attesa dopo config)
+// ─────────────────────────────────────
+void startWaitPhase() {
+  tft.fillScreen(C_BLACK);
+  tft.setTextColor(C_TIMBRY, C_BLACK); tft.setTextSize(4);
+  tft.setCursor(100, 80);
+  tft.print("READY");
+
+  tft.setTextColor(C_WHITE, C_BLACK); tft.setTextSize(2);
+  tft.setCursor(50, 160);
+  tft.print("Backend: ");
+  tft.setTextColor(C_CYAN, C_BLACK);
+  tft.print(cfg.backend);
+
+  tft.setTextColor(C_WHITE, C_BLACK);
+  tft.setCursor(50, 195);
+  tft.print("Reader: ");
+  tft.setTextColor(C_CYAN, C_BLACK);
+  tft.print(cfg.readerId);
+
+  tft.setTextColor(C_WHITE, C_BLACK); tft.setTextSize(1);
+  tft.setCursor(50, 250);
+  tft.print("Tag admin per riavviare portale • Attesa OTA...");
+
+  Serial.println("=== PHASE WAIT: In attesa ===");
+  Serial.printf("Backend: %s\n", cfg.backend);
+  Serial.printf("Reader: %s\n", cfg.readerId);
+  Serial.printf("Company: %s\n", cfg.companyId);
+}
+
+void runWaitPhase() {
+  // Check RFID per tag admin
+  if (!rfid.PICC_IsNewCardPresent()) return;
+  if (!rfid.PICC_ReadCardSerial())   return;
+
+  g_uid[0] = '\0';
+  for (byte i = 0; i < rfid.uid.size; i++) {
+    char hex[5];
+    snprintf(hex, sizeof(hex), "%02X", rfid.uid.uidByte[i]);
+    strlcat(g_uid, hex, sizeof(g_uid));
+  }
+  rfid.PICC_HaltA();
+  rfid.PCD_StopCrypto1();
+
+  bool isAdmin = (strcmp(g_uid, ADMIN_UID) == 0) || (strcmp(g_uid, ADMIN_UID_2) == 0);
+  if (isAdmin) {
+    Serial.println("TAG ADMIN rilevato → riapertura portale");
+    beepRead();
+    g_phase = PHASE_PROV;
+    return;
+  }
+
+  // OTA heartbeat
+  taskHeartbeat();
 }
 
 // ─────────────────────────────────────
@@ -508,7 +762,7 @@ void setup() {
   tft.print(FW_VERSION);
   tft.setTextColor(C_GRAY, C_BLACK); tft.setTextSize(1);
   tft.setCursor(100, 175);
-  tft.print("Display • Buzzer • RFID");
+  tft.print("Display • Buzzer • RFID • WiFi • Config");
   delay(1500);
 
   // Mostra risultato RFID (init già fatto prima del TFT)
@@ -541,29 +795,24 @@ void setup() {
   }
   delay(3000);
 
-  // WiFi
-  tft.fillScreen(C_BLACK);
-  tft.setTextColor(C_WHITE, C_BLACK); tft.setTextSize(2);
-  tft.setCursor(60, 140);
-  tft.print("Connessione WiFi...");
-
-  WiFiManager wm;
-  wm.setConfigPortalTimeout(120);
-  wm.setSaveConfigCallback([]() {});
-  if (!wm.autoConnect("timbry-test")) {
+  // Carica configurazione precedente se esiste
+  if (!loadConfig()) {
+    Serial.println("Nessuna config trovata → provisioning richiesto");
+    tft.fillScreen(C_BLACK);
     tft.setTextColor(C_YELLOW, C_BLACK); tft.setTextSize(2);
-    tft.setCursor(60, 175);
-    tft.print("Nessun WiFi — OTA disabilitato");
+    tft.setCursor(60, 140);
+    tft.print("Config non trovata");
+    tft.setCursor(60, 165);
+    tft.print("Sarà richiesta dopo i test");
     delay(2000);
   } else {
+    Serial.printf("Config caricata: %s\n", cfg.backend);
+    tft.fillScreen(C_BLACK);
     tft.setTextColor(C_GREEN, C_BLACK); tft.setTextSize(2);
-    tft.setCursor(60, 175);
-    tft.print("WiFi OK: ");
-    tft.print(WiFi.localIP().toString().c_str());
-    delay(1500);
+    tft.setCursor(60, 140);
+    tft.print("Config trovata!");
+    delay(1000);
   }
-
-  loadConfig();
 
   // Avvia sequenza test
   g_phase = PHASE_COLOR;
@@ -575,16 +824,14 @@ void setup() {
 // ─────────────────────────────────────
 void loop() {
   switch (g_phase) {
-    case PHASE_COLOR:  runColorTest();  break;
-    case PHASE_BUZZER: runBuzzerTest(); break;
-    case PHASE_RFID:   runRfidTest();   break;
-  }
-
-  // Aggiorna footer OTA ogni secondo (solo nella fase RFID)
-  if (g_phase == PHASE_RFID && millis() - g_lastOtaTick >= 1000) {
-    g_lastOtaTick = millis();
-    updateOtaFooter();
+    case PHASE_COLOR:  runColorTest();        break;
+    case PHASE_BUZZER: runBuzzerTest();       break;
+    case PHASE_RFID:   runRfidTest();         break;
+    case PHASE_WIFI:   break;
+    case PHASE_PROV:   startProvisioning();   break;
+    case PHASE_WAIT:   runWaitPhase();        break;
   }
 
   taskHeartbeat();
+  delay(20);
 }
