@@ -258,7 +258,10 @@ static String resolveOtaUrl(const String& startUrl) {
 }
 
 void doOTA(const String& url, const String& newVersion) {
-  Serial.printf("OTA: %s → %s\n", FW_VERSION, newVersion.c_str());
+  Serial.printf("\n=== OTA INIZIO ===\n");
+  Serial.printf("Versione: %s → %s\n", FW_VERSION, newVersion.c_str());
+  Serial.printf("URL ricevuto: %s\n", url.c_str());
+
   tft.fillScreen(C_BLACK);
   tft.setTextColor(C_WHITE, C_BLACK); tft.setTextSize(2);
   tft.setCursor(40, 100); tft.print("Aggiornamento OTA");
@@ -266,22 +269,48 @@ void doOTA(const String& url, const String& newVersion) {
   tft.setCursor(40, 160); tft.print("Non spegnere...");
 
   String finalUrl = resolveOtaUrl(url);
+  Serial.printf("URL finale (dopo redirect): %s\n", finalUrl.c_str());
+
+  if (finalUrl.length() == 0) {
+    Serial.println("ERRORE: URL finale vuoto!");
+    tft.fillScreen(C_BLACK);
+    tft.setTextColor(C_RED, C_BLACK); tft.setTextSize(2);
+    tft.setCursor(40, 140); tft.print("URL OTA vuoto");
+    delay(3000);
+    return;
+  }
+
   httpUpdate.rebootOnUpdate(true);
+
+  Serial.printf("WiFi status: %d\n", WiFi.status());
+  Serial.printf("Memoria libera: %d bytes\n", ESP.getFreeHeap());
+
   t_httpUpdate_return ret;
   if (finalUrl.startsWith("https")) {
+    Serial.println("OTA via HTTPS (con certificato)...");
     WiFiClientSecure c; c.setCACert(ROOT_CA);
     ret = httpUpdate.update(c, finalUrl);
   } else {
+    Serial.println("OTA via HTTP...");
     WiFiClient c;
     ret = httpUpdate.update(c, finalUrl);
   }
+
   // Arriva qui solo se OTA fallita
-  Serial.printf("OTA FALLITO (%d): %s\n",
-    httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
+  int errCode = httpUpdate.getLastError();
+  String errStr = httpUpdate.getLastErrorString();
+  Serial.printf("\n=== OTA FALLITO ===\n");
+  Serial.printf("Errore: %d\n", errCode);
+  Serial.printf("Messaggio: %s\n", errStr.c_str());
+  Serial.printf("Memoria libera dopo fallimento: %d bytes\n", ESP.getFreeHeap());
+
   tft.fillScreen(C_BLACK);
   tft.setTextColor(C_RED, C_BLACK); tft.setTextSize(2);
-  tft.setCursor(40, 140); tft.print("OTA FALLITO");
-  delay(3000);
+  tft.setCursor(40, 100); tft.print("OTA FALLITO");
+  tft.setTextSize(1);
+  tft.setCursor(40, 140); tft.printf("Err: %d", errCode);
+  tft.setCursor(40, 160); tft.print(errStr.c_str());
+  delay(5000);
 }
 
 void taskHeartbeat() {
@@ -303,13 +332,21 @@ void taskHeartbeat() {
 
   auto handleResp = [&](HTTPClient& h, int code) {
     pingCode = code;
-    Serial.printf("PING: %d\n", code);
+    Serial.printf("PING code: %d\n", code);
     if (code == 200) {
+      String body = h.getString();
+      Serial.printf("PING response: %s\n", body.c_str());
       StaticJsonDocument<256> doc;
-      if (!deserializeJson(doc, h.getString())) {
+      if (!deserializeJson(doc, body)) {
         otaUrl     = doc["ota_url"]     | "";
         otaVersion = doc["ota_version"] | "";
+        Serial.printf("OTA URL: %s\n", otaUrl.c_str());
+        Serial.printf("OTA Version: %s\n", otaVersion.c_str());
+      } else {
+        Serial.println("ERRORE: JSON deserialization fallito");
       }
+    } else {
+      Serial.printf("PING fallito con code: %d\n", code);
     }
   };
 
@@ -331,14 +368,23 @@ void taskHeartbeat() {
   }
 
   if (pingCode <= 0) {
+    Serial.println("PING fallito, retry anticipato in 10s");
     unsigned long _now = millis();
     g_lastHeartbeat = (_now >= HEARTBEAT_MS - 10000UL)
                       ? _now - HEARTBEAT_MS + 10000UL
                       : 0UL;
   }
 
-  if (otaUrl.length() > 0 && otaVersion.length() > 0 && otaVersion != FW_VERSION)
+  if (otaUrl.length() > 0 && otaVersion.length() > 0 && otaVersion != FW_VERSION) {
+    Serial.printf("OTA disponibile: %s → %s\n", FW_VERSION, otaVersion.c_str());
     doOTA(otaUrl, otaVersion);
+  } else if (otaUrl.length() == 0) {
+    Serial.println("No OTA: URL vuoto");
+  } else if (otaVersion.length() == 0) {
+    Serial.println("No OTA: version vuota");
+  } else if (otaVersion == FW_VERSION) {
+    Serial.printf("No OTA: versione già aggiornata (%s)\n", FW_VERSION);
+  }
 }
 
 // ─────────────────────────────────────
