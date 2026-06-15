@@ -295,12 +295,26 @@ void doOTA(const String& url, const String& newVersion) {
     return;
   }
 
-  // Salta il test di connettività quando usiamo setInsecure() per test
-  // La verifica di connettività è diagnostica, non blocca l'OTA
-
   Serial.println("Procedo con OTA (setInsecure per diagnostica certificato)...");
 
   httpUpdate.rebootOnUpdate(true);
+
+  // Debug: test HEAD request per vedere il code HTTP
+  Serial.println("Test HEAD request per diagnostica...");
+  if (finalUrl.startsWith("https")) {
+    WiFiClientSecure c;
+    c.setInsecure();
+    HTTPClient http;
+    if (http.begin(c, finalUrl)) {
+      int httpCode = http.sendRequest("HEAD");
+      Serial.printf("HTTP HEAD code: %d\n", httpCode);
+      Serial.printf("Content-Type: %s\n", http.header("Content-Type").c_str());
+      Serial.printf("Content-Length: %s\n", http.header("Content-Length").c_str());
+      http.end();
+    }
+  }
+
+  Serial.println("Inizio download firmware...");
 
   t_httpUpdate_return ret;
   if (finalUrl.startsWith("https")) {
