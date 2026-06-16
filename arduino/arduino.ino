@@ -639,7 +639,7 @@ static String resolveOtaUrl(const String& startUrl) {
   for (int hop = 0; hop < 3; hop++) {
     String loc = "";
     if (url.startsWith("https")) {
-      WiFiClientSecure c; c.setCACert(ROOT_CA); HTTPClient h;
+      WiFiClientSecure c; c.setCACert(ROOT_CA); c.setInsecure(); HTTPClient h;
       h.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
       h.collectHeaders(hdrKeys, 1);
       if (h.begin(c, url)) {
@@ -683,7 +683,7 @@ void doOTA(String url, String newVersion) {
   httpUpdate.rebootOnUpdate(true);
   t_httpUpdate_return ret;
   if (finalUrl.startsWith("https")) {
-    WiFiClientSecure client; client.setCACert(ROOT_CA);
+    WiFiClientSecure client; client.setCACert(ROOT_CA); client.setInsecure();
     ret = httpUpdate.update(client, finalUrl);
   } else {
     WiFiClient client;
