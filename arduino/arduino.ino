@@ -899,10 +899,8 @@ void taskRfid() {
   }
 
   if (g_waitingNtp) {
-    tft.fillRect(0, FTR_TXT_Y, 480, 30, C_BG);
-    tft.setTextColor(C_RED, C_BG); tft.setTextSize(2);
-    tft.drawString("Orario non pronto", 80, FTR_TXT_Y);
-    delay(1500); showWaitingNtp();
+    // Rifiuta silenziosamente i tag normali se NTP non sincronizzato
+    // (i tag ADMIN sono già stati elaborati sopra e non arrivano qui)
     return;
   }
 
