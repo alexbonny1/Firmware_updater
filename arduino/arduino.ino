@@ -995,6 +995,13 @@ void startProvisioning() {
 
   WiFiManager wm;
   wm.setConfigPortalTimeout(300);
+  wm.setConnectTimeout(20);           // Timeout per singolo tentativo: 20s
+  wm.setConnectRetries(3);            // Massimo 3 tentativi di connessione
+  wm.setSaveConnectSSID(true);        // Salva SSID connesso
+  wm.setHostname("timbry-nfc");       // Hostname per mDNS
+  // Disabilita AP se già connesso (migliora stabilità)
+  wm.setCleanConnect(true);           // Forza disconnessione da vecchie reti
+  wm.setWiFiChannel(6);               // Usa canale 6 (2.4GHz, centro banda)
 
   WiFiManagerParameter p_b("backend", "Backend URL",         cfg.backend,   127);
   WiFiManagerParameter p_r("reader",  "Reader ID",           cfg.readerId,   63);
@@ -1115,6 +1122,18 @@ void taskSerial() {
     } else {
       Serial.println("Tema non valido (0=Scuro, 1=Chiaro)");
     }
+  } else if (cmdU == "WIFISCAN") {
+    Serial.println("=== WiFi Network Scan ===");
+    int n = WiFi.scanNetworks();
+    Serial.printf("Found %d networks:\n", n);
+    for (int i = 0; i < n; i++) {
+      uint8_t* bssid = WiFi.BSSID(i);
+      Serial.printf("[%d] SSID: %-32s | Channel: %2d | RSSI: %3d dBm | Auth: %d | BSSID: %02X:%02X:%02X:%02X:%02X:%02X\n",
+        i, WiFi.SSID(i).c_str(), WiFi.channel(i), WiFi.RSSI(i), WiFi.encryptionType(i),
+        bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+    }
+    Serial.printf("Saved SSID: '%s'\n", WiFi.SSID().c_str());
+    Serial.printf("Current status: %d\n", WiFi.status());
   }
 }
 
@@ -1178,19 +1197,41 @@ void setup() {
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
   WiFi.persistent(true);
-  // Abilita canali 1-13 (router italiani usano spesso ch 12-13)
+  // Abilita solo 2.4GHz: ESP32 WROOM ha problemi con 5GHz
   wifi_country_t country = {"IT", 1, 13, 20, WIFI_COUNTRY_POLICY_MANUAL};
   esp_wifi_set_country(&country);
-  // Usa SSID+PSK espliciti per evitare il BSSID lock di WiFiManager
-  { String ssid = WiFi.SSID(), psk = WiFi.psk();
-    Serial.printf("WiFi SSID: '%s'\n", ssid.c_str());
-    if (ssid.length() > 0) WiFi.begin(ssid.c_str(), psk.c_str());
-    else WiFi.begin(); }
+
+  // Debug: scansione reti disponibili
+  String ssid = WiFi.SSID();
+  String psk = WiFi.psk();
+  Serial.printf("WiFi salvato SSID: '%s'\n", ssid.c_str());
+
+  if (ssid.length() > 0) {
+    Serial.println("Scanning available networks...");
+    int n = WiFi.scanNetworks();
+    Serial.printf("Found %d networks:\n", n);
+    for (int i = 0; i < n; i++) {
+      Serial.printf("  [%d] %s (ch:%d rssi:%d %s)\n", i, WiFi.SSID(i).c_str(),
+        WiFi.channel(i), WiFi.RSSI(i), WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "OPEN" : "WPA");
+    }
+    Serial.println("Connecting to saved WiFi...");
+    WiFi.begin(ssid.c_str(), psk.c_str());
+  } else {
+    Serial.println("No saved WiFi, scanning...");
+    WiFi.scanNetworks();
+    WiFi.begin();
+  }
+
   unsigned long s = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - s < 30000) {
-    delay(500); Serial.print(".");
+    delay(500);
+    Serial.printf(".");
+    if (millis() - s > 5000 && millis() - s < 6000) {
+      Serial.printf("\nStatus: %d (WL_CONNECTED=%d WL_CONNECT_FAILED=%d WL_NO_SSID_AVAIL=%d WL_DISCONNECTED=%d)\n",
+        WiFi.status(), WL_CONNECTED, WL_CONNECT_FAILED, WL_NO_SSID_AVAIL, WL_DISCONNECTED);
+    }
   }
-  Serial.printf("\nWiFi status: %d\n", WiFi.status());
+  Serial.printf("\nWiFi status final: %d (0=idle 1=scanning 2=connecting 3=connected 4=fail 6=disconnect)\n", WiFi.status());
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("WIFI OK - IP: %s\n", WiFi.localIP().toString().c_str());
@@ -1203,8 +1244,12 @@ void setup() {
     startQueueFlush();
     if (g_ntpSynced) showIdle();
   } else {
-    Serial.println("WIFI OFFLINE - modalita offline attiva");
-    g_wifiOffline = true; beepErr(); rfidInit(); showWaitingNtp();
+    Serial.println("WIFI OFFLINE - Avvio provisioning...");
+    tft.fillScreen(C_BG);
+    tft.setTextColor(C_YELLOW_DYN, C_BG); tft.setTextSize(2);
+    tft.drawString("Provisioning WiFi", 20, 140);
+    delay(2000);
+    startProvisioning();
   }
 }
 
