@@ -1247,6 +1247,7 @@ void setup() {
     g_lastReconnect = millis();
     if (!g_ntpSynced) {
       showWaitingNtp();
+      rfidInit();  // Reinizializza lettore RFID dopo mostrare WaitingNtp
     } else {
       showIdle();
     }
