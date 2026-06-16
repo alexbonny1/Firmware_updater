@@ -997,11 +997,7 @@ void startProvisioning() {
   wm.setConfigPortalTimeout(300);
   wm.setConnectTimeout(20);           // Timeout per singolo tentativo: 20s
   wm.setConnectRetries(3);            // Massimo 3 tentativi di connessione
-  wm.setSaveConnectSSID(true);        // Salva SSID connesso
-  wm.setHostname("timbry-nfc");       // Hostname per mDNS
-  // Disabilita AP se già connesso (migliora stabilità)
   wm.setCleanConnect(true);           // Forza disconnessione da vecchie reti
-  wm.setWiFiChannel(6);               // Usa canale 6 (2.4GHz, centro banda)
 
   WiFiManagerParameter p_b("backend", "Backend URL",         cfg.backend,   127);
   WiFiManagerParameter p_r("reader",  "Reader ID",           cfg.readerId,   63);
