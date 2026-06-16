@@ -668,16 +668,57 @@ static String resolveOtaUrl(const String& startUrl) {
 void doOTA(String url, String newVersion) {
   Serial.printf("OTA: aggiornamento v%s → v%s\n", FW_VERSION, newVersion.c_str());
 
+  // Callback per aggiornare progress bar
+  int otaProgress = 0;
+  auto onHttpEvent = [&](httpsClient_event_t *event) {
+    if (event->event_id == HTTP_EVENT_ON_DATA) {
+      otaProgress = event->state;
+      // Ridisegna progress bar
+      const int pb_y = 220;
+      const int pb_h = 20;
+      const int pb_w = 400;
+      const int pb_x = (480 - pb_w) / 2;
+
+      // Sfondo della progress bar
+      tft.fillRect(pb_x, pb_y, pb_w, pb_h, C_DIM);
+      // Barra di progresso
+      if (otaProgress > 0) {
+        int filled = (pb_w * otaProgress) / 100;
+        tft.fillRect(pb_x, pb_y, filled, pb_h, C_GREEN);
+      }
+      // Percentuale
+      char percStr[8]; snprintf(percStr, sizeof(percStr), "%d%%", otaProgress);
+      tft.setTextColor(C_TEXT, C_BG); tft.setTextSize(1);
+      int perc_w = tft.textWidth(percStr);
+      tft.fillRect(pb_x + pb_w / 2 - perc_w / 2 - 2, pb_y + 5, perc_w + 4, 12, C_BG);
+      tft.drawString(percStr, pb_x + pb_w / 2 - perc_w / 2, pb_y + 5);
+    }
+  };
+
+  // Schermata iniziale
   tft.fillScreen(C_BG);
   tft.drawBitmap(LOGO_X, LOGO_Y, image_IMG_9600_bits, LOGO_W, LOGO_H, C_ACCENT);
+
   tft.setTextColor(C_ACCENT, C_BG); tft.setTextSize(2);
-  tft.drawString("Aggiornamento FW", HDR_TXT_X, HDR_TXT_Y);
+  String titleText = "Aggiornamento FW";
+  int title_w = tft.textWidth(titleText);
+  tft.drawString(titleText, (480 - title_w) / 2, 50);
+
   tft.setTextColor(C_TEXT, C_BG); tft.setTextSize(3);
   char verStr[32];
-  snprintf(verStr, sizeof(verStr), "v%s -> v%s", FW_VERSION, newVersion.c_str());
-  tft.drawString(verStr, 40, 150);
-  tft.setTextColor(C_YELLOW_DYN, C_BG); tft.setTextSize(2);
-  tft.drawString("Non spegnere...", 80, 220);
+  snprintf(verStr, sizeof(verStr), "v%s → v%s", FW_VERSION, newVersion.c_str());
+  int ver_w = tft.textWidth(verStr);
+  tft.drawString(verStr, (480 - ver_w) / 2, 130);
+
+  // Progress bar background
+  const int pb_y = 220;
+  const int pb_h = 20;
+  const int pb_w = 400;
+  const int pb_x = (480 - pb_w) / 2;
+  tft.fillRect(pb_x, pb_y, pb_w, pb_h, C_DIM);
+
+  tft.setTextColor(C_YELLOW_DYN, C_BG); tft.setTextSize(1);
+  tft.drawString("Scaricamento in corso...", pb_x, pb_y + pb_h + 8);
 
   String finalUrl = resolveOtaUrl(url);
   httpUpdate.rebootOnUpdate(true);
@@ -693,8 +734,14 @@ void doOTA(String url, String newVersion) {
   // Arriva qui solo se OTA fallita (altrimenti si riavvia)
   Serial.printf("OTA FALLITO (%d): %s\n", httpUpdate.getLastError(),
     httpUpdate.getLastErrorString().c_str());
+  tft.fillScreen(C_BG);
+  tft.drawBitmap(LOGO_X, LOGO_Y, image_IMG_9600_bits, LOGO_W, LOGO_H, C_ACCENT);
   tft.setTextColor(C_RED, C_BG); tft.setTextSize(2);
-  tft.drawString("Errore aggiornamento", 60, 270);
+  String errText = "Errore aggiornamento";
+  int err_w = tft.textWidth(errText);
+  tft.drawString(errText, (480 - err_w) / 2, 150);
+  tft.setTextColor(C_TEXT, C_BG); tft.setTextSize(1);
+  tft.drawString(httpUpdate.getLastErrorString().c_str(), 20, 200);
   delay(4000);
   showIdle();
 }
