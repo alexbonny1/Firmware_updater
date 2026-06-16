@@ -34,6 +34,7 @@
 #include <WiFiManager.h>
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
+#include <Update.h>
 #include <WiFiClientSecure.h>
 #include "certs.h"
 #include <Preferences.h>
@@ -665,37 +666,28 @@ static String resolveOtaUrl(const String& startUrl) {
   return url;
 }
 
+void drawOtaProgressBar(int progress) {
+  const int pb_y = 220;
+  const int pb_h = 20;
+  const int pb_w = 400;
+  const int pb_x = (480 - pb_w) / 2;
+
+  tft.fillRect(pb_x, pb_y, pb_w, pb_h, C_DIM);
+  if (progress > 0) {
+    int filled = (pb_w * progress) / 100;
+    tft.fillRect(pb_x, pb_y, filled, pb_h, C_GREEN);
+  }
+
+  char percStr[8]; snprintf(percStr, sizeof(percStr), "%d%%", progress);
+  tft.setTextColor(C_TEXT, C_BG); tft.setTextSize(1);
+  int perc_w = tft.textWidth(percStr);
+  tft.fillRect(pb_x + pb_w / 2 - perc_w / 2 - 2, pb_y + 5, perc_w + 4, 12, C_BG);
+  tft.drawString(percStr, pb_x + pb_w / 2 - perc_w / 2, pb_y + 5);
+}
+
 void doOTA(String url, String newVersion) {
   Serial.printf("OTA: aggiornamento v%s → v%s\n", FW_VERSION, newVersion.c_str());
 
-  // Callback per aggiornare progress bar
-  int otaProgress = 0;
-  auto onHttpEvent = [&](httpsClient_event_t *event) {
-    if (event->event_id == HTTP_EVENT_ON_DATA) {
-      otaProgress = event->state;
-      // Ridisegna progress bar
-      const int pb_y = 220;
-      const int pb_h = 20;
-      const int pb_w = 400;
-      const int pb_x = (480 - pb_w) / 2;
-
-      // Sfondo della progress bar
-      tft.fillRect(pb_x, pb_y, pb_w, pb_h, C_DIM);
-      // Barra di progresso
-      if (otaProgress > 0) {
-        int filled = (pb_w * otaProgress) / 100;
-        tft.fillRect(pb_x, pb_y, filled, pb_h, C_GREEN);
-      }
-      // Percentuale
-      char percStr[8]; snprintf(percStr, sizeof(percStr), "%d%%", otaProgress);
-      tft.setTextColor(C_TEXT, C_BG); tft.setTextSize(1);
-      int perc_w = tft.textWidth(percStr);
-      tft.fillRect(pb_x + pb_w / 2 - perc_w / 2 - 2, pb_y + 5, perc_w + 4, 12, C_BG);
-      tft.drawString(percStr, pb_x + pb_w / 2 - perc_w / 2, pb_y + 5);
-    }
-  };
-
-  // Schermata iniziale
   tft.fillScreen(C_BG);
   tft.drawBitmap(LOGO_X, LOGO_Y, image_IMG_9600_bits, LOGO_W, LOGO_H, C_ACCENT);
 
@@ -710,7 +702,6 @@ void doOTA(String url, String newVersion) {
   int ver_w = tft.textWidth(verStr);
   tft.drawString(verStr, (480 - ver_w) / 2, 130);
 
-  // Progress bar background
   const int pb_y = 220;
   const int pb_h = 20;
   const int pb_w = 400;
@@ -721,29 +712,74 @@ void doOTA(String url, String newVersion) {
   tft.drawString("Scaricamento in corso...", pb_x, pb_y + pb_h + 8);
 
   String finalUrl = resolveOtaUrl(url);
-  httpUpdate.rebootOnUpdate(true);
-  t_httpUpdate_return ret;
+
+  HTTPClient http;
   if (finalUrl.startsWith("https")) {
-    WiFiClientSecure client; client.setCACert(ROOT_CA); client.setInsecure();
-    ret = httpUpdate.update(client, finalUrl);
+    WiFiClientSecure* client = new WiFiClientSecure();
+    client->setCACert(ROOT_CA);
+    client->setInsecure();
+    http.begin(*client, finalUrl);
   } else {
-    WiFiClient client;
-    ret = httpUpdate.update(client, finalUrl);
+    WiFiClient* client = new WiFiClient();
+    http.begin(*client, finalUrl);
   }
 
-  // Arriva qui solo se OTA fallita (altrimenti si riavvia)
-  Serial.printf("OTA FALLITO (%d): %s\n", httpUpdate.getLastError(),
-    httpUpdate.getLastErrorString().c_str());
-  tft.fillScreen(C_BG);
-  tft.drawBitmap(LOGO_X, LOGO_Y, image_IMG_9600_bits, LOGO_W, LOGO_H, C_ACCENT);
-  tft.setTextColor(C_RED, C_BG); tft.setTextSize(2);
-  String errText = "Errore aggiornamento";
-  int err_w = tft.textWidth(errText);
-  tft.drawString(errText, (480 - err_w) / 2, 150);
-  tft.setTextColor(C_TEXT, C_BG); tft.setTextSize(1);
-  tft.drawString(httpUpdate.getLastErrorString().c_str(), 20, 200);
-  delay(4000);
-  showIdle();
+  http.setTimeout(30000);
+  int httpCode = http.GET();
+
+  if (httpCode != 200) {
+    Serial.printf("HTTP error: %d\n", httpCode);
+    http.end();
+    tft.fillScreen(C_BG);
+    tft.drawBitmap(LOGO_X, LOGO_Y, image_IMG_9600_bits, LOGO_W, LOGO_H, C_ACCENT);
+    tft.setTextColor(C_RED, C_BG); tft.setTextSize(2);
+    String errText = "Errore HTTP " + String(httpCode);
+    int err_w = tft.textWidth(errText);
+    tft.drawString(errText, (480 - err_w) / 2, 150);
+    delay(4000);
+    showIdle();
+    return;
+  }
+
+  int totalSize = http.getSize();
+  int receivedSize = 0;
+  WiFiClient* stream = http.getStreamPtr();
+
+  Update.begin(totalSize);
+
+  uint8_t buff[256];
+  while (http.connected() && (receivedSize < totalSize || totalSize == -1)) {
+    size_t size = stream->available();
+    if (size) {
+      int c = stream->readBytes(buff, ((size > sizeof(buff)) ? sizeof(buff) : size));
+      Update.write(buff, c);
+      receivedSize += c;
+
+      int progress = (totalSize > 0) ? (receivedSize * 100) / totalSize : 0;
+      drawOtaProgressBar(progress);
+
+      Serial.printf("OTA: %d / %d (%d%%)\n", receivedSize, totalSize, progress);
+    }
+    delay(1);
+  }
+
+  http.end();
+
+  if (Update.end(true)) {
+    Serial.println("OTA Update Success");
+    delay(500);
+    ESP.restart();
+  } else {
+    Serial.printf("OTA Update Failed: %s\n", Update.errorString());
+    tft.fillScreen(C_BG);
+    tft.drawBitmap(LOGO_X, LOGO_Y, image_IMG_9600_bits, LOGO_W, LOGO_H, C_ACCENT);
+    tft.setTextColor(C_RED, C_BG); tft.setTextSize(2);
+    String errText = "Errore aggiornamento";
+    int err_w = tft.textWidth(errText);
+    tft.drawString(errText, (480 - err_w) / 2, 150);
+    delay(4000);
+    showIdle();
+  }
 }
 
 // ── HEARTBEAT ────────────────────────
