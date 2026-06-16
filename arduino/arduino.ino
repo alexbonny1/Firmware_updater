@@ -1160,6 +1160,10 @@ void setup() {
     cfg.valid = false;
   }
 
+  // Inizializza stato display con placeholder orario
+  ds.status = "ATTESA";
+  ds.oraCorrente = "--:--";
+
   // Splash
   tft.fillScreen(C_BG);
   tft.drawBitmap(LOGO_X, LOGO_Y, image_IMG_9600_bits, LOGO_W, LOGO_H, C_ACCENT);
@@ -1240,12 +1244,14 @@ void setup() {
     startQueueFlush();
     if (g_ntpSynced) showIdle();
   } else {
-    Serial.println("WIFI OFFLINE - Avvio provisioning...");
-    tft.fillScreen(C_BG);
-    tft.setTextColor(C_YELLOW_DYN, C_BG); tft.setTextSize(2);
-    tft.drawString("Provisioning WiFi", 20, 140);
-    delay(2000);
-    startProvisioning();
+    Serial.println("WIFI OFFLINE - Mostrando IDLE, riproverò in background");
+    g_wifiOffline = true;
+    g_lastReconnect = millis();
+    if (!g_ntpSynced) {
+      showWaitingNtp();
+    } else {
+      showIdle();
+    }
   }
 }
 
