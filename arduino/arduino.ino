@@ -294,7 +294,7 @@ void drawClock() {
                       : "--:--";
 
   int textWidth = tft.textWidth(oraDisplay);
-  int x = (480 - textWidth) / 2 ;         // Centra orizzontalmente
+  int x = (480 - textWidth) / 2 - 15;         // Centra orizzontalmente
   int y = CLK_Y;                    // Posiziona verticalmente
 
   tft.drawString(oraDisplay, x, y);
