@@ -1,0 +1,16 @@
+{
+  "cpu": {
+    "fqbn": "esp32:esp32:esp32",
+    "name": "ESP32 Dev Module",
+    "network": false
+  },
+  "libraries": [
+    "WiFiManager",
+    "ArduinoJson",
+    "MFRC522",
+    "TFT_eSPI"
+  ],
+  "name": "timbry Firmware",
+  "projectType": "cpp",
+  "version": "3.4"
+}
