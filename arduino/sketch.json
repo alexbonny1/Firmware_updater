@@ -1,6 +1,6 @@
 {
   "cpu": {
-    "fqbn": "esp32:esp32:esp32",
+    "fqbn": "esp32:esp32:esp32:DebugLevel=none,FlashMode=qio,FlashSize=4M,PartitionScheme=default,PSRAM=disabled,CPUFreq=240,FlashFreq=80,Verbose=false,UploadSpeed=921600",
     "name": "ESP32 Dev Module",
     "network": false
   },
