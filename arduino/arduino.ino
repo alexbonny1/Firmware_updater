@@ -277,12 +277,17 @@ bool syncNTP() {
 bool rtcInit() {
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
   if (!rtc.begin()) { Serial.println("RTC: not found"); return false; }
-  if (!rtc.isrunning()) { Serial.println("RTC: not running"); return false; }
+  if (!rtc.isrunning()) Serial.println("RTC: clock halted, will be set by NTP");
   DateTime t = rtc.now();
-  if (t.year() < 2020) { Serial.println("RTC: invalid year"); return false; }
-  Serial.printf("RTC OK: %04d-%02d-%02d %02d:%02d:%02d\n",
-    t.year(), t.month(), t.day(), t.hour(), t.minute(), t.second());
+  Serial.printf("RTC hardware OK: %04d-%02d-%02d %02d:%02d:%02d%s\n",
+    t.year(), t.month(), t.day(), t.hour(), t.minute(), t.second(),
+    t.year() < 2020 ? " (time not set yet)" : "");
   return true;
+}
+
+bool rtcTimeValid() {
+  if (!g_rtcOk) return false;
+  return rtc.now().year() >= 2020;
 }
 
 void rtcApplyToSystem() {
@@ -1221,7 +1226,7 @@ void setup() {
     cfg.theme, cfg.theme == 0 ? "Scuro" : "Chiaro", g_queueSize);
 
   g_rtcOk = rtcInit();
-  if (g_rtcOk) {
+  if (rtcTimeValid()) {
     rtcApplyToSystem();
     g_ntpSynced = true;
     Serial.println("Time from RTC, device ready");
