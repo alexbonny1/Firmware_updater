@@ -1287,11 +1287,7 @@ void setup() {
     if (g_ntpSynced) {
       showIdle();
     } else {
-      tft.fillScreen(C_BG);
-      tft.setTextColor(C_YELLOW_DYN, C_BG); tft.setTextSize(2);
-      tft.drawString("Provisioning WiFi", 20, 140);
-      delay(2000);
-      startProvisioning();
+      showWaitingNtp();
     }
   }
 }
