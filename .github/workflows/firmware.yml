@@ -41,6 +41,7 @@ jobs:
           arduino-cli lib install "MFRC522"
           arduino-cli lib install "WiFiManager"
           arduino-cli lib install "ArduinoJson"
+          arduino-cli lib install "RTClib"
 
       - name: Copy User_Setup.h into TFT_eSPI
         run: |

@@ -13,6 +13,7 @@
  *   MOSI → GPIO 23 / MISO → GPIO 19
  *   SCK  → GPIO 18 / SS   → GPIO 21 / RST → GPIO 22
  * BUZZER → GPIO 33
+ * RTC DS1307 (I2C): SDA → GPIO 25 / SCL → GPIO 26
  *
  * TAG ADMIN: 3605CA06 / F917C906
  *   1a lettura → schermata configurazione
@@ -46,6 +47,8 @@
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "lopaka_assets.h"
+#include <Wire.h>
+#include <RTClib.h>
 
 // ── PIN ──────────────────────────────
 #define PIN_RC522_SS    21
@@ -55,6 +58,8 @@
 #define PIN_RC522_SCK   18
 #define BUZZER_PIN      33
 #define TFT_BL_PIN      32
+#define PIN_I2C_SDA     25
+#define PIN_I2C_SCL     26
 
 // ── CONFIG ───────────────────────────
 #define FW_VERSION       "3.5"
@@ -111,6 +116,8 @@ uint16_t C_YELLOW_DYN = C_YELLOW;
 MFRC522     rfid(PIN_RC522_SS, PIN_RC522_RST);
 TFT_eSPI    tft = TFT_eSPI();
 Preferences prefs;
+RTC_DS1307  rtc;
+bool        g_rtcOk = false;
 
 // ── STRUTTURE ────────────────────────
 struct Config {
@@ -262,7 +269,35 @@ bool syncNTP() {
     delay(200); Serial.print(".");
   }
   Serial.println(" OK");
+  if (g_rtcOk) rtcUpdateFromSystem();
   return true;
+}
+
+// ── RTC DS1307 ───────────────────────
+bool rtcInit() {
+  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+  if (!rtc.begin()) { Serial.println("RTC: not found"); return false; }
+  if (!rtc.isrunning()) { Serial.println("RTC: not running"); return false; }
+  DateTime t = rtc.now();
+  if (t.year() < 2020) { Serial.println("RTC: invalid year"); return false; }
+  Serial.printf("RTC OK: %04d-%02d-%02d %02d:%02d:%02d\n",
+    t.year(), t.month(), t.day(), t.hour(), t.minute(), t.second());
+  return true;
+}
+
+void rtcApplyToSystem() {
+  DateTime t = rtc.now();
+  struct timeval tv = { .tv_sec = (time_t)t.unixtime(), .tv_usec = 0 };
+  settimeofday(&tv, nullptr);
+  setenv("TZ", TZ_POSIX, 1);
+  tzset();
+}
+
+void rtcUpdateFromSystem() {
+  time_t now = time(nullptr);
+  if (now < 1000000000UL) return;
+  rtc.adjust(DateTime((uint32_t)now));
+  Serial.println("RTC updated from NTP");
 }
 
 // ── RFID INIT ────────────────────────
@@ -1185,6 +1220,13 @@ void setup() {
     cfg.backend, cfg.readerId, cfg.companyId,
     cfg.theme, cfg.theme == 0 ? "Scuro" : "Chiaro", g_queueSize);
 
+  g_rtcOk = rtcInit();
+  if (g_rtcOk) {
+    rtcApplyToSystem();
+    g_ntpSynced = true;
+    Serial.println("Time from RTC, device ready");
+  }
+
   tft.fillScreen(C_BG);
   tft.setTextColor(C_TEXT, C_BG); tft.setTextSize(2);
   tft.drawString("Connessione WiFi...", 20, 140);
@@ -1240,12 +1282,17 @@ void setup() {
     startQueueFlush();
     if (g_ntpSynced) showIdle();
   } else {
-    Serial.println("WIFI OFFLINE - Avvio provisioning...");
-    tft.fillScreen(C_BG);
-    tft.setTextColor(C_YELLOW_DYN, C_BG); tft.setTextSize(2);
-    tft.drawString("Provisioning WiFi", 20, 140);
-    delay(2000);
-    startProvisioning();
+    g_wifiOffline = true;
+    Serial.println("WIFI OFFLINE");
+    if (g_ntpSynced) {
+      showIdle();
+    } else {
+      tft.fillScreen(C_BG);
+      tft.setTextColor(C_YELLOW_DYN, C_BG); tft.setTextSize(2);
+      tft.drawString("Provisioning WiFi", 20, 140);
+      delay(2000);
+      startProvisioning();
+    }
   }
 }
 
