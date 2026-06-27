@@ -1253,6 +1253,7 @@ void setup() {
     if (g_ntpSynced) showIdle();
   } else {
     Serial.println("WIFI OFFLINE - passare tag admin per provisioning");
+    rfidInit(); // re-init RFID dopo 30s di operazioni WiFi che perturbano SPI
     g_wifiOffline = true;
     showWaitingNtp(); // mostra "attesa WiFi..." con "--:--"
     // taskWifi() riproverà la connessione ogni 10s
