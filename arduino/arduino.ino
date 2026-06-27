@@ -254,15 +254,9 @@ void beepOffline() { tone(BUZZER_PIN, 1600, 100); }
 
 // ── NTP ──────────────────────────────
 bool syncNTP() {
-  configTzTime(TZ_POSIX, NTP_SERVER);
-  Serial.print("NTP sync");
-  unsigned long s = millis();
-  while (time(nullptr) < 1000000000UL) {
-    if (millis() - s > 8000) { Serial.println(" FAIL"); return false; }
-    delay(200); Serial.print(".");
-  }
-  Serial.println(" OK");
-  return true;
+  configTzTime(TZ_POSIX, NTP_SERVER); // avvia SNTP in background, non bloccante
+  Serial.println("NTP: sync avviato");
+  return time(nullptr) >= 1000000000UL; // true solo se già sincronizzato
 }
 
 // ── RFID INIT ────────────────────────
@@ -421,11 +415,22 @@ void showWaitingNtp() {
 void taskNtpRetry() {
   if (!g_waitingNtp) return;
   if (WiFi.status() != WL_CONNECTED) return;
-  if (millis() - g_lastNtpRetry < NTP_RETRY_MS) return;
-  g_lastNtpRetry = millis();
-  Serial.println("NTP retry...");
-  if (syncNTP()) { g_ntpSynced = true; g_waitingNtp = false; showIdle(); }
-  else { drawWifiBars(rssiToBars()); }
+
+  // Controlla ogni ciclo se SNTP ha completato in background
+  if (time(nullptr) >= 1000000000UL) {
+    Serial.println("NTP OK");
+    g_ntpSynced  = true;
+    g_waitingNtp = false;
+    showIdle();
+    return;
+  }
+
+  // Ogni NTP_RETRY_MS re-avvia SNTP (es. server irraggiungibile al primo tentativo)
+  if (millis() - g_lastNtpRetry >= NTP_RETRY_MS) {
+    g_lastNtpRetry = millis();
+    Serial.println("NTP retry...");
+    configTzTime(TZ_POSIX, NTP_SERVER); // non bloccante
+  }
 }
 
 void updateClock() {
@@ -946,8 +951,12 @@ void taskWifi() {
       g_wifiOffline = false;
       Serial.println("WIFI RESTORED");
       rfidInit();
-      if (syncNTP()) { g_ntpSynced = true; }
-      else { showWaitingNtp(); }
+      configTzTime(TZ_POSIX, NTP_SERVER); // avvia SNTP in background
+      if (time(nullptr) >= 1000000000UL) {
+        g_ntpSynced = true;
+      } else {
+        showWaitingNtp(); // taskNtpRetry() completerà il sync
+      }
       g_lastHeartbeat = millis() - HEARTBEAT_MS;
       sendHeartbeat();
       startQueueFlush();
@@ -1232,9 +1241,12 @@ void setup() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("WIFI OK - IP: %s\n", WiFi.localIP().toString().c_str());
     rfidInit(); beepOk();
-    // NTP prima di TLS: senza ora valida la verifica cert fallisce
-    if (syncNTP()) { g_ntpSynced = true; }
-    else showWaitingNtp();
+    configTzTime(TZ_POSIX, NTP_SERVER); // avvia SNTP in background (non bloccante)
+    if (time(nullptr) >= 1000000000UL) {
+      g_ntpSynced = true;
+    } else {
+      showWaitingNtp(); // taskNtpRetry() completerà il sync nel loop principale
+    }
     g_lastHeartbeat = millis() - HEARTBEAT_MS;
     sendHeartbeat();
     startQueueFlush();
