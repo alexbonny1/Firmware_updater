@@ -563,18 +563,24 @@ int httpPost(const char* path, const char* payload) {
     code = http.POST(payload); body = http.getString(); http.end();
   }
   if (code == 200 || code == 201) {
-    Serial.printf("BODY: %s\n", body.c_str()); // debug: mostra la risposta del backend
+    Serial.printf("BODY: %s\n", body.c_str());
     String tipo    = "";
     String dipName = "";
+    bool   success = true;
     if (body.length() > 2) {
       StaticJsonDocument<512> doc;
       if (!deserializeJson(doc, body)) {
+        if (doc.containsKey("success")) success = doc["success"].as<bool>();
         tipo    = doc["tipo"]       | "";
         dipName = doc["dipendente"] | "";
       }
     }
-    if (tipo.length() == 0) tipo = "OK"; // fallback se il backend non manda "tipo"
-    showResult(tipo, dipName, getLocalTime());
+    if (!success) {
+      showResult("ERRORE", "Tag non registrato", "");
+    } else {
+      if (tipo.length() == 0) tipo = "OK";
+      showResult(tipo, dipName, getLocalTime());
+    }
   }
   Serial.printf("CODE: %d\n", code);
   return code;
