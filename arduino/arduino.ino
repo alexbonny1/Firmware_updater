@@ -562,13 +562,19 @@ int httpPost(const char* path, const char* payload) {
     http.addHeader("Content-Type", "application/json");
     code = http.POST(payload); body = http.getString(); http.end();
   }
-  if ((code == 200 || code == 201) && body.length() > 2) {
-    StaticJsonDocument<512> doc;
-    if (!deserializeJson(doc, body)) {
-      String tipo    = doc["tipo"]       | "";
-      String dipName = doc["dipendente"] | "";
-      if (tipo.length() > 0) showResult(tipo, dipName, getLocalTime());
+  if (code == 200 || code == 201) {
+    Serial.printf("BODY: %s\n", body.c_str()); // debug: mostra la risposta del backend
+    String tipo    = "";
+    String dipName = "";
+    if (body.length() > 2) {
+      StaticJsonDocument<512> doc;
+      if (!deserializeJson(doc, body)) {
+        tipo    = doc["tipo"]       | "";
+        dipName = doc["dipendente"] | "";
+      }
     }
+    if (tipo.length() == 0) tipo = "OK"; // fallback se il backend non manda "tipo"
+    showResult(tipo, dipName, getLocalTime());
   }
   Serial.printf("CODE: %d\n", code);
   return code;
