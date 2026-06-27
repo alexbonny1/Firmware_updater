@@ -1252,12 +1252,11 @@ void setup() {
     startQueueFlush();
     if (g_ntpSynced) showIdle();
   } else {
-    Serial.println("WIFI OFFLINE - Avvio provisioning...");
-    tft.fillScreen(C_BG);
-    tft.setTextColor(C_YELLOW_DYN, C_BG); tft.setTextSize(2);
-    tft.drawString("Provisioning WiFi", 20, 140);
-    delay(2000);
-    startProvisioning();
+    Serial.println("WIFI OFFLINE - passare tag admin per provisioning");
+    g_wifiOffline = true;
+    showWaitingNtp(); // mostra "attesa WiFi..." con "--:--"
+    // taskWifi() riproverà la connessione ogni 10s
+    // doppio tap del tag admin aprirà il portale WiFi
   }
 }
 
