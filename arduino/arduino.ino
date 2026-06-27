@@ -562,7 +562,7 @@ int httpPost(const char* path, const char* payload) {
     http.addHeader("Content-Type", "application/json");
     code = http.POST(payload); body = http.getString(); http.end();
   }
-  if (code == 200 && body.length() > 2) {
+  if ((code == 200 || code == 201) && body.length() > 2) {
     StaticJsonDocument<512> doc;
     if (!deserializeJson(doc, body)) {
       String tipo    = doc["tipo"]       | "";
